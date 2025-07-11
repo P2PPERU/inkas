@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User.model');
+const { User } = require('../models');
 
 exports.protect = async (req, res, next) => {
   let token;
@@ -20,7 +20,9 @@ exports.protect = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Obtener usuario
-    req.user = await User.findById(decoded.id).select('-password');
+    req.user = await User.findByPk(decoded.id, {
+      attributes: { exclude: ['password'] }
+    });
 
     if (!req.user) {
       return res.status(401).json({ 
@@ -28,7 +30,7 @@ exports.protect = async (req, res, next) => {
       });
     }
 
-    if (!req.user.isActive) {
+    if (!req.user.is_active) {
       return res.status(403).json({ 
         message: 'Cuenta desactivada' 
       });

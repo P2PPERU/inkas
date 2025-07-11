@@ -1,35 +1,37 @@
-const User = require('../models/User.model');
-const Bonus = require('../models/Bonus.model');
-const RouletteCode = require('../models/RouletteCode.model');
-const Transaction = require('../models/Transaction.model');
+const { User, Bonus, RouletteCode, AffiliateProfile, AffiliateCode, AffiliationHistory } = require('../models');
+const { Op } = require('sequelize');
+const sequelize = require('../models').sequelize;
 
 // Obtener clientes del agente
 exports.getMyClients = async (req, res) => {
   try {
     const { page = 1, limit = 10, status = 'all' } = req.query;
+    const offset = (page - 1) * limit;
 
-    const filter = { parentAgent: req.user.id };
+    const whereConditions = { parent_agent_id: req.user.id };
     
     if (status !== 'all') {
-      filter.isActive = status === 'active';
+      whereConditions.is_active = status === 'active';
     }
 
-    const clients = await User.find(filter)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const count = await User.countDocuments(filter);
+    const { count, rows: clients } = await User.findAndCountAll({
+      where: whereConditions,
+      attributes: { exclude: ['password'] },
+      order: [['created_at', 'DESC']],
+      limit: parseInt(limit),
+      offset: offset
+    });
 
     // Estadísticas adicionales
     const stats = {
       totalClients: count,
-      activeClients: await User.countDocuments({ 
-        parentAgent: req.user.id, 
-        isActive: true 
+      activeClients: await User.count({ 
+        where: { 
+          parent_agent_id: req.user.id, 
+          is_active: true 
+        }
       }),
-      totalBalance: clients.reduce((sum, client) => sum + client.balance, 0)
+      totalBalance: clients.reduce((sum, client) => sum + parseFloat(client.balance), 0)
     };
 
     res.json({
@@ -37,9 +39,10 @@ exports.getMyClients = async (req, res) => {
       clients,
       stats,
       totalPages: Math.ceil(count / limit),
-      currentPage: page
+      currentPage: parseInt(page)
     });
   } catch (error) {
+    console.error('Error al obtener clientes:', error);
     res.status(500).json({ 
       message: 'Error al obtener clientes',
       error: error.message 
@@ -49,15 +52,20 @@ exports.getMyClients = async (req, res) => {
 
 // Crear cliente
 exports.createClient = async (req, res) => {
+  const t = await sequelize.transaction();
+  
   try {
-    const { username, email, password, profile } = req.body;
+    const { username, email, password, firstName, lastName, phone } = req.body;
 
     // Verificar si el usuario existe
-    const userExists = await User.findOne({ 
-      $or: [{ email }, { username }] 
+    const userExists = await User.findOne({
+      where: {
+        [Op.or]: [{ email }, { username }]
+      }
     });
     
     if (userExists) {
+      await t.rollback();
       return res.status(400).json({ 
         message: 'El usuario o email ya existe' 
       });
@@ -68,20 +76,47 @@ exports.createClient = async (req, res) => {
       username,
       email,
       password,
-      profile,
+      profile_data: {
+        firstName: firstName || '',
+        lastName: lastName || '',
+        phone: phone || '',
+        avatar: null
+      },
       role: 'client',
-      parentAgent: req.user.id
+      parent_agent_id: req.user.id,
+      balance: parseFloat(process.env.DEFAULT_WELCOME_BONUS) || 50
+    }, { transaction: t });
+
+    // Registrar en historial de afiliación
+    await AffiliationHistory.create({
+      client_id: client.id,
+      agent_id: req.user.id,
+      bonus_applied: client.balance,
+      ip_address: req.ip,
+      user_agent: req.get('user-agent')
+    }, { transaction: t });
+
+    // Actualizar contador del afiliado
+    await AffiliateProfile.increment('total_referrals', {
+      where: { user_id: req.user.id },
+      transaction: t
     });
 
-    // Remover password de la respuesta
-    const clientResponse = client.toObject();
-    delete clientResponse.password;
+    await t.commit();
 
     res.status(201).json({
       success: true,
-      client: clientResponse
+      client: {
+        id: client.id,
+        username: client.username,
+        email: client.email,
+        profile: client.profile_data,
+        balance: client.balance
+      }
     });
   } catch (error) {
+    await t.rollback();
+    console.error('Error al crear cliente:', error);
     res.status(500).json({ 
       message: 'Error al crear cliente',
       error: error.message 
@@ -93,11 +128,13 @@ exports.createClient = async (req, res) => {
 exports.updateClient = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { profile, isActive } = req.body;
+    const { firstName, lastName, phone, isActive } = req.body;
 
-    const client = await User.findOne({ 
-      _id: clientId,
-      parentAgent: req.user.id 
+    const client = await User.findOne({
+      where: {
+        id: clientId,
+        parent_agent_id: req.user.id
+      }
     });
 
     if (!client) {
@@ -107,12 +144,17 @@ exports.updateClient = async (req, res) => {
     }
 
     // Actualizar datos permitidos
-    if (profile) {
-      client.profile = { ...client.profile, ...profile };
+    if (firstName !== undefined || lastName !== undefined || phone !== undefined) {
+      client.profile_data = {
+        ...client.profile_data,
+        ...(firstName !== undefined && { firstName }),
+        ...(lastName !== undefined && { lastName }),
+        ...(phone !== undefined && { phone })
+      };
     }
     
     if (typeof isActive === 'boolean') {
-      client.isActive = isActive;
+      client.is_active = isActive;
     }
 
     await client.save();
@@ -120,14 +162,15 @@ exports.updateClient = async (req, res) => {
     res.json({
       success: true,
       client: {
-        id: client._id,
+        id: client.id,
         username: client.username,
         email: client.email,
-        profile: client.profile,
-        isActive: client.isActive
+        profile: client.profile_data,
+        isActive: client.is_active
       }
     });
   } catch (error) {
+    console.error('Error al actualizar cliente:', error);
     res.status(500).json({ 
       message: 'Error al actualizar cliente',
       error: error.message 
@@ -142,9 +185,11 @@ exports.assignBonusToClient = async (req, res) => {
     const bonusData = req.body;
 
     // Verificar que el cliente pertenezca al agente
-    const client = await User.findOne({ 
-      _id: clientId,
-      parentAgent: req.user.id 
+    const client = await User.findOne({
+      where: {
+        id: clientId,
+        parent_agent_id: req.user.id
+      }
     });
 
     if (!client) {
@@ -156,8 +201,8 @@ exports.assignBonusToClient = async (req, res) => {
     // Crear bonificación
     const bonus = await Bonus.create({
       ...bonusData,
-      assignedTo: clientId,
-      assignedBy: req.user.id
+      assigned_to: clientId,
+      assigned_by: req.user.id
     });
 
     res.status(201).json({
@@ -165,6 +210,7 @@ exports.assignBonusToClient = async (req, res) => {
       bonus
     });
   } catch (error) {
+    console.error('Error al asignar bonificación:', error);
     res.status(500).json({ 
       message: 'Error al asignar bonificación',
       error: error.message 
@@ -178,61 +224,56 @@ exports.getAgentStats = async (req, res) => {
     const { startDate, endDate } = req.query;
 
     const dateFilter = {};
-    if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate) dateFilter.$lte = new Date(endDate);
+    if (startDate) dateFilter[Op.gte] = new Date(startDate);
+    if (endDate) dateFilter[Op.lte] = new Date(endDate);
 
     // Clientes
-    const totalClients = await User.countDocuments({ 
-      parentAgent: req.user.id 
+    const totalClients = await User.count({
+      where: { parent_agent_id: req.user.id }
     });
     
-    const activeClients = await User.countDocuments({ 
-      parentAgent: req.user.id,
-      isActive: true 
+    const activeClients = await User.count({
+      where: { 
+        parent_agent_id: req.user.id,
+        is_active: true 
+      }
     });
 
     // Bonificaciones
-    const bonusStats = await Bonus.aggregate([
-      {
-        $match: {
-          assignedBy: req.user.id,
-          ...(Object.keys(dateFilter).length && { 
-            createdAt: dateFilter 
-          })
-        }
+    const bonusStats = await Bonus.findAll({
+      where: {
+        assigned_by: req.user.id,
+        ...(Object.keys(dateFilter).length && { 
+          created_at: dateFilter 
+        })
       },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$amount' }
-        }
-      }
-    ]);
+      attributes: [
+        'status',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
+        [sequelize.fn('SUM', sequelize.col('amount')), 'totalAmount']
+      ],
+      group: ['status']
+    });
 
     // Códigos de ruleta
-    const rouletteStats = await RouletteCode.aggregate([
-      {
-        $match: {
-          createdBy: req.user.id,
-          ...(Object.keys(dateFilter).length && { 
-            createdAt: dateFilter 
-          })
-        }
+    const rouletteStats = await RouletteCode.findOne({
+      where: {
+        created_by: req.user.id,
+        ...(Object.keys(dateFilter).length && { 
+          created_at: dateFilter 
+        })
       },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: 1 },
-          used: { 
-            $sum: { $cond: [{ $ne: ['$usedBy', null] }, 1, 0] } 
-          },
-          active: { 
-            $sum: { $cond: ['$isActive', 1, 0] } 
-          }
-        }
-      }
-    ]);
+      attributes: [
+        [sequelize.fn('COUNT', sequelize.col('id')), 'total'],
+        [sequelize.fn('COUNT', sequelize.literal("CASE WHEN used_by IS NOT NULL THEN 1 END")), 'used'],
+        [sequelize.fn('COUNT', sequelize.literal("CASE WHEN is_active = true THEN 1 END")), 'active']
+      ]
+    });
+
+    // Estadísticas de afiliación
+    const affiliateProfile = await AffiliateProfile.findOne({
+      where: { user_id: req.user.id }
+    });
 
     res.json({
       success: true,
@@ -242,15 +283,25 @@ exports.getAgentStats = async (req, res) => {
           active: activeClients,
           inactive: totalClients - activeClients
         },
-        bonuses: bonusStats,
-        rouletteCodes: rouletteStats[0] || {
-          total: 0,
-          used: 0,
-          active: 0
+        bonuses: bonusStats.map(stat => ({
+          status: stat.status,
+          count: parseInt(stat.dataValues.count),
+          totalAmount: parseFloat(stat.dataValues.totalAmount) || 0
+        })),
+        rouletteCodes: {
+          total: parseInt(rouletteStats?.dataValues.total) || 0,
+          used: parseInt(rouletteStats?.dataValues.used) || 0,
+          active: parseInt(rouletteStats?.dataValues.active) || 0
+        },
+        affiliate: {
+          totalReferrals: affiliateProfile?.total_referrals || 0,
+          totalEarnings: parseFloat(affiliateProfile?.total_earnings) || 0,
+          commissionRate: parseFloat(affiliateProfile?.commission_rate) || 0
         }
       }
     });
   } catch (error) {
+    console.error('Error al obtener estadísticas:', error);
     res.status(500).json({ 
       message: 'Error al obtener estadísticas',
       error: error.message 
@@ -264,53 +315,86 @@ exports.getRecentActivity = async (req, res) => {
     const { limit = 20 } = req.query;
 
     // Obtener IDs de clientes del agente
-    const clientIds = await User.find({ 
-      parentAgent: req.user.id 
-    }).distinct('_id');
+    const clients = await User.findAll({
+      where: { parent_agent_id: req.user.id },
+      attributes: ['id']
+    });
+    const clientIds = clients.map(c => c.id);
 
     // Bonificaciones recientes
-    const recentBonuses = await Bonus.find({
-      $or: [
-        { assignedBy: req.user.id },
-        { assignedTo: { $in: clientIds } }
-      ]
-    })
-    .populate('assignedTo', 'username')
-    .sort({ createdAt: -1 })
-    .limit(5);
+    const recentBonuses = await Bonus.findAll({
+      where: {
+        [Op.or]: [
+          { assigned_by: req.user.id },
+          { assigned_to: { [Op.in]: clientIds } }
+        ]
+      },
+      include: [{
+        model: User,
+        as: 'assignedTo',
+        attributes: ['username']
+      }],
+      order: [['created_at', 'DESC']],
+      limit: 5
+    });
 
     // Códigos usados recientemente
-    const recentCodes = await RouletteCode.find({
-      createdBy: req.user.id,
-      usedBy: { $ne: null }
-    })
-    .populate('usedBy', 'username')
-    .sort({ usedAt: -1 })
-    .limit(5);
+    const recentCodes = await RouletteCode.findAll({
+      where: {
+        created_by: req.user.id,
+        used_by: { [Op.ne]: null }
+      },
+      include: [{
+        model: User,
+        as: 'usedBy',
+        attributes: ['username']
+      }],
+      order: [['used_at', 'DESC']],
+      limit: 5
+    });
+
+    // Nuevas afiliaciones
+    const recentAffiliations = await AffiliationHistory.findAll({
+      where: { agent_id: req.user.id },
+      include: [{
+        model: User,
+        as: 'client',
+        attributes: ['username', 'email']
+      }],
+      order: [['created_at', 'DESC']],
+      limit: 5
+    });
 
     // Combinar y ordenar actividades
     const activities = [
       ...recentBonuses.map(bonus => ({
         type: 'bonus',
         description: `Bonificación "${bonus.name}" asignada a ${bonus.assignedTo.username}`,
-        date: bonus.createdAt,
+        date: bonus.created_at,
         data: bonus
       })),
       ...recentCodes.map(code => ({
         type: 'roulette',
         description: `Código ${code.code} usado por ${code.usedBy.username}`,
-        date: code.usedAt,
+        date: code.used_at,
         data: code
+      })),
+      ...recentAffiliations.map(affiliation => ({
+        type: 'affiliation',
+        description: `Nuevo cliente ${affiliation.client.username} afiliado`,
+        date: affiliation.created_at,
+        data: affiliation
       }))
     ]
-    .sort((a, b) => b.date - a.date)
-    .slice(0, limit);
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, parseInt(limit));
 
     res.json({
       success: true,
       activities
     });
   } catch (error) {
+    console.error('Error al obtener actividad reciente:', error);
     res.status(500).json({ 
       message: 'Error al obtener actividad reciente',
       error: error.message 
@@ -325,30 +409,47 @@ exports.getAgentDashboard = async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const activeToday = await User.countDocuments({
-      parentAgent: req.user.id,
-      lastLogin: { $gte: today }
+    const activeToday = await User.count({
+      where: {
+        parent_agent_id: req.user.id,
+        last_login: { [Op.gte]: today }
+      }
     });
 
     // Bonificaciones pendientes
-    const pendingBonuses = await Bonus.countDocuments({
-      assignedBy: req.user.id,
-      status: 'pending'
+    const pendingBonuses = await Bonus.count({
+      where: {
+        assigned_by: req.user.id,
+        status: 'pending'
+      }
     });
 
     // Códigos activos
-    const activeCodes = await RouletteCode.countDocuments({
-      createdBy: req.user.id,
-      isActive: true
+    const activeCodes = await RouletteCode.count({
+      where: {
+        created_by: req.user.id,
+        is_active: true
+      }
     });
 
     // Top 5 clientes por balance
-    const topClients = await User.find({
-      parentAgent: req.user.id
-    })
-    .select('username profile balance')
-    .sort({ balance: -1 })
-    .limit(5);
+    const topClients = await User.findAll({
+      where: { parent_agent_id: req.user.id },
+      attributes: ['id', 'username', 'profile_data', 'balance'],
+      order: [['balance', 'DESC']],
+      limit: 5
+    });
+
+    // Información del afiliado
+    const affiliateProfile = await AffiliateProfile.findOne({
+      where: { user_id: req.user.id },
+      include: [{
+        model: AffiliateCode,
+        as: 'codes',
+        where: { is_active: true },
+        required: false
+      }]
+    });
 
     res.json({
       success: true,
@@ -356,10 +457,17 @@ exports.getAgentDashboard = async (req, res) => {
         activeToday,
         pendingBonuses,
         activeCodes,
-        topClients
+        topClients,
+        affiliateInfo: {
+          code: affiliateProfile?.affiliate_code,
+          totalReferrals: affiliateProfile?.total_referrals || 0,
+          commissionRate: affiliateProfile?.commission_rate || 0,
+          activeCodes: affiliateProfile?.codes?.length || 0
+        }
       }
     });
   } catch (error) {
+    console.error('Error al obtener dashboard:', error);
     res.status(500).json({ 
       message: 'Error al obtener dashboard',
       error: error.message 
