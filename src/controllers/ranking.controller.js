@@ -58,16 +58,23 @@ exports.getRankings = async (req, res) => {
       include: [{
         model: User,
         as: 'player',
-        attributes: ['id', 'username', 'profile_data', 'balance']
+        attributes: ['id', 'username', 'profile_data', 'balance'],
+        required: false // CAMBIO: No requerir usuario
       }],
       order: [[orderField, 'DESC']],
       limit: parseInt(limit),
       offset: offset
     });
 
-    // Actualizar posiciones basadas en el orden actual
+    // Actualizar posiciones y agregar nombre para mostrar
     rankings.forEach((ranking, index) => {
       ranking.dataValues.position = offset + index + 1;
+      ranking.dataValues.displayName = ranking.player 
+        ? ranking.player.username 
+        : ranking.external_player_name;
+      ranking.dataValues.displayEmail = ranking.player 
+        ? ranking.player.email 
+        : ranking.external_player_email;
     });
 
     res.json({
@@ -96,9 +103,18 @@ exports.getPlayerRanking = async (req, res) => {
     const { type = 'all' } = req.query;
 
     const whereConditions = {
-      player_id: playerId,
       is_visible: true
     };
+
+    // Buscar por ID de usuario o por nombre externo
+    if (playerId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      // Es un UUID - buscar por player_id
+      whereConditions.player_id = playerId;
+    } else {
+      // Es un nombre - buscar por external_player_name
+      whereConditions.external_player_name = playerId;
+      whereConditions.is_external = true;
+    }
 
     if (type !== 'all') {
       whereConditions.ranking_type = type;
@@ -109,7 +125,8 @@ exports.getPlayerRanking = async (req, res) => {
       include: [{
         model: User,
         as: 'player',
-        attributes: ['id', 'username', 'profile_data']
+        attributes: ['id', 'username', 'profile_data'],
+        required: false
       }],
       order: [['season', 'DESC'], ['ranking_type', 'ASC']]
     });
@@ -120,9 +137,20 @@ exports.getPlayerRanking = async (req, res) => {
       });
     }
 
+    // Preparar información del jugador
+    const playerInfo = rankings[0].player ? {
+      id: rankings[0].player.id,
+      username: rankings[0].player.username,
+      profile: rankings[0].player.profile_data
+    } : {
+      name: rankings[0].external_player_name,
+      email: rankings[0].external_player_email,
+      isExternal: true
+    };
+
     res.json({
       success: true,
-      player: rankings[0].player,
+      player: playerInfo,
       rankings: rankings.map(r => ({
         type: r.ranking_type,
         season: r.season,
@@ -179,7 +207,8 @@ exports.getAllRankings = async (req, res) => {
         {
           model: User,
           as: 'player',
-          attributes: ['id', 'username', 'email', 'profile_data']
+          attributes: ['id', 'username', 'email', 'profile_data'],
+          required: false
         },
         {
           model: User,
@@ -191,6 +220,16 @@ exports.getAllRankings = async (req, res) => {
       order: [['points', 'DESC']],
       limit: parseInt(limit),
       offset: offset
+    });
+
+    // Agregar información de display
+    rankings.forEach(ranking => {
+      ranking.dataValues.displayName = ranking.player 
+        ? ranking.player.username 
+        : ranking.external_player_name;
+      ranking.dataValues.displayEmail = ranking.player 
+        ? ranking.player.email 
+        : ranking.external_player_email;
     });
 
     res.json({
@@ -225,29 +264,54 @@ exports.updateRanking = async (req, res) => {
       losses,
       season,
       period = 'all_time',
-      isVisible = true
+      isVisible = true,
+      // Nuevos campos para jugadores externos
+      externalPlayerName,
+      externalPlayerEmail
     } = req.body;
 
-    // Verificar que el jugador existe
-    const player = await User.findByPk(playerId);
-    if (!player) {
-      await t.rollback();
-      return res.status(404).json({ 
-        message: 'Jugador no encontrado' 
-      });
+    let player = null;
+    let isExternal = false;
+    let whereClause = {};
+
+    // Determinar si es un jugador registrado o externo
+    if (playerId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      // Es un UUID - buscar usuario
+      player = await User.findByPk(playerId);
+      if (player) {
+        whereClause = {
+          player_id: playerId,
+          ranking_type: type,
+          season: season || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+          ranking_period: period
+        };
+      } else {
+        // UUID no válido, crear como externo
+        isExternal = true;
+      }
+    } else {
+      // No es UUID, crear como jugador externo
+      isExternal = true;
     }
 
-    const currentSeason = season || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    if (isExternal) {
+      whereClause = {
+        external_player_name: externalPlayerName || playerId,
+        is_external: true,
+        ranking_type: type,
+        season: season || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+        ranking_period: period
+      };
+    }
 
     // Buscar o crear ranking
     const [ranking, created] = await Ranking.findOrCreate({
-      where: {
-        player_id: playerId,
-        ranking_type: type,
-        season: currentSeason,
-        ranking_period: period
-      },
+      where: whereClause,
       defaults: {
+        player_id: player ? player.id : null,
+        is_external: isExternal,
+        external_player_name: isExternal ? (externalPlayerName || playerId) : null,
+        external_player_email: isExternal ? externalPlayerEmail : null,
         last_updated_by: req.user.id
       },
       transaction: t
@@ -274,7 +338,7 @@ exports.updateRanking = async (req, res) => {
     await t.commit();
 
     // Actualizar posiciones
-    await Ranking.updatePositions(type, currentSeason, period);
+    await Ranking.updatePositions(type, ranking.season, period);
 
     res.json({
       success: true,
@@ -307,6 +371,16 @@ exports.importFromExcel = async (req, res) => {
     data.forEach(row => {
       row._filename = req.file.originalname;
     });
+
+    // Validar datos antes de procesar
+    const validationErrors = excelService.validateRankingData(data);
+    if (validationErrors.length > 0) {
+      await fs.unlink(req.file.path);
+      return res.status(400).json({
+        message: 'Errores de validación en el archivo',
+        errors: validationErrors
+      });
+    }
 
     // Procesar datos
     const results = await Ranking.createOrUpdateFromExcel(data, req.user.id);
@@ -419,9 +493,23 @@ exports.getRankingStats = async (req, res) => {
       where: whereConditions,
       attributes: [
         'ranking_type',
-        [sequelize.fn('COUNT', sequelize.fn('DISTINCT', sequelize.col('player_id'))), 'players']
+        [sequelize.fn('COUNT', sequelize.fn('DISTINCT', 
+          sequelize.literal(`COALESCE(player_id::text, external_player_name)`)
+        )), 'players']
       ],
       group: ['ranking_type']
+    });
+
+    // Jugadores externos vs registrados
+    const playerDistribution = await Ranking.findAll({
+      where: whereConditions,
+      attributes: [
+        'is_external',
+        [sequelize.fn('COUNT', sequelize.fn('DISTINCT', 
+          sequelize.literal(`COALESCE(player_id::text, external_player_name)`)
+        )), 'count']
+      ],
+      group: ['is_external']
     });
 
     // Promedios por tipo
@@ -447,10 +535,18 @@ exports.getRankingStats = async (req, res) => {
       include: [{
         model: User,
         as: 'player',
-        attributes: ['username', 'profile_data']
+        attributes: ['username', 'profile_data'],
+        required: false
       }],
       order: [['points', 'DESC']],
       limit: 10
+    });
+
+    // Agregar nombres de display a top players
+    topPlayers.forEach(ranking => {
+      ranking.dataValues.displayName = ranking.player 
+        ? ranking.player.username 
+        : ranking.external_player_name;
     });
 
     // Últimas actualizaciones
@@ -460,7 +556,8 @@ exports.getRankingStats = async (req, res) => {
         {
           model: User,
           as: 'player',
-          attributes: ['username']
+          attributes: ['username'],
+          required: false
         },
         {
           model: User,
@@ -479,6 +576,10 @@ exports.getRankingStats = async (req, res) => {
           type: p.ranking_type,
           players: parseInt(p.dataValues.players)
         })),
+        playerDistribution: {
+          registered: playerDistribution.find(p => !p.is_external)?.dataValues.count || 0,
+          external: playerDistribution.find(p => p.is_external)?.dataValues.count || 0
+        },
         averages: averagesByType.map(a => ({
           type: a.ranking_type,
           avgPoints: parseFloat(a.dataValues.avgPoints) || 0,
@@ -548,6 +649,58 @@ exports.downloadTemplate = async (req, res) => {
     console.error('Error al descargar plantilla:', error);
     res.status(500).json({ 
       message: 'Error al descargar plantilla',
+      error: error.message 
+    });
+  }
+};
+
+// Buscar jugadores por nombre (útil para autocompletado)
+exports.searchPlayers = async (req, res) => {
+  try {
+    const { query } = req.query;
+
+    if (!query || query.length < 2) {
+      return res.status(400).json({ 
+        message: 'La búsqueda debe tener al menos 2 caracteres' 
+      });
+    }
+
+    // Buscar en usuarios registrados
+    const users = await User.findAll({
+      where: {
+        [Op.or]: [
+          { username: { [Op.iLike]: `%${query}%` } },
+          { email: { [Op.iLike]: `%${query}%` } }
+        ]
+      },
+      attributes: ['id', 'username', 'email'],
+      limit: 10
+    });
+
+    // Buscar en jugadores externos
+    const externalPlayers = await Ranking.findAll({
+      where: {
+        is_external: true,
+        external_player_name: { [Op.iLike]: `%${query}%` }
+      },
+      attributes: [
+        [sequelize.fn('DISTINCT', sequelize.col('external_player_name')), 'name'],
+        'external_player_email'
+      ],
+      limit: 10
+    });
+
+    res.json({
+      success: true,
+      results: {
+        registered: users,
+        external: externalPlayers
+      }
+    });
+  } catch (error) {
+    console.error('Error al buscar jugadores:', error);
+    res.status(500).json({ 
+      message: 'Error al buscar jugadores',
       error: error.message 
     });
   }

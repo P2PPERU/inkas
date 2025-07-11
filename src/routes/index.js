@@ -8,7 +8,7 @@ const affiliateRoutes = require('./affiliate.routes');
 const bonusRoutes = require('./bonus.routes');
 const newsRoutes = require('./news.routes');
 const rouletteRoutes = require('./roulette.routes');
-// const rankingRoutes = require('./ranking.routes');
+const rankingRoutes = require('./ranking.routes');
 
 // Rutas públicas
 router.use('/auth', authRoutes);
@@ -20,7 +20,7 @@ router.use('/affiliate', affiliateRoutes);
 router.use('/bonus', bonusRoutes);
 router.use('/news', newsRoutes);
 router.use('/roulette', rouletteRoutes);
-// router.use('/rankings', rankingRoutes);
+router.use('/rankings', rankingRoutes);
 
 // Ruta de salud
 router.get('/health', (req, res) => {

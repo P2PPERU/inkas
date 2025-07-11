@@ -57,6 +57,7 @@ class ExcelService {
       'usuario': 'username',
       'jugador': 'username',
       'player': 'username',
+      'nombre': 'username',
       'email': 'email',
       'correo': 'email',
       'puntos': 'points',
@@ -89,30 +90,42 @@ class ExcelService {
   async createRankingTemplate() {
     const wb = XLSX.utils.book_new();
     
-    // Datos de ejemplo
+    // Datos de ejemplo - ahora con jugadores externos
     const data = [
       {
-        'Usuario': 'ejemplo1',
-        'Email': 'ejemplo1@poker.com',
+        'Usuario': 'cliente1',
+        'Email': 'cliente1@poker.com',
         'Puntos': 1000,
         'Manos Jugadas': 500,
         'Torneos': 10,
         'Rake': 250.50,
         'Ganadas': 300,
         'Perdidas': 200,
-        'Temporada': '2025-07',
+        'Temporada': '2025-01',
         'Periodo': 'monthly'
       },
       {
-        'Usuario': 'ejemplo2',
-        'Email': 'ejemplo2@poker.com',
+        'Usuario': 'jugador_externo_1',
+        'Email': '',
         'Puntos': 850,
         'Manos Jugadas': 400,
         'Torneos': 8,
         'Rake': 200.00,
         'Ganadas': 250,
         'Perdidas': 150,
-        'Temporada': '2025-07',
+        'Temporada': '2025-01',
+        'Periodo': 'monthly'
+      },
+      {
+        'Usuario': 'ProPoker2025',
+        'Email': 'pro@external.com',
+        'Puntos': 1200,
+        'Manos Jugadas': 600,
+        'Torneos': 15,
+        'Rake': 300.00,
+        'Ganadas': 400,
+        'Perdidas': 200,
+        'Temporada': '2025-01',
         'Periodo': 'monthly'
       }
     ];
@@ -122,7 +135,7 @@ class ExcelService {
 
     // Ajustar ancho de columnas
     const colWidths = [
-      { wch: 15 }, // Usuario
+      { wch: 20 }, // Usuario
       { wch: 25 }, // Email
       { wch: 10 }, // Puntos
       { wch: 15 }, // Manos Jugadas
@@ -140,23 +153,33 @@ class ExcelService {
       ['INSTRUCCIONES PARA IMPORTAR RANKINGS'],
       [''],
       ['1. Complete los datos en la hoja "Datos"'],
-      ['2. Los campos obligatorios son: Usuario o Email'],
-      ['3. Puede usar cualquiera de estos nombres de columna:'],
-      ['   - Usuario, Jugador, Player'],
-      ['   - Email, Correo'],
-      ['   - Puntos, Points'],
-      ['   - Manos, Hands, Manos Jugadas, Hands Played'],
-      ['   - Torneos, Tournaments, Torneos Jugados'],
-      ['   - Rake, Total Rake'],
-      ['   - Ganadas, Wins'],
-      ['   - Perdidas, Losses'],
-      ['   - Temporada, Season (formato: YYYY-MM)'],
-      ['   - Periodo, Period (valores: all_time, monthly, weekly, daily)'],
+      ['2. Puede incluir jugadores registrados o externos:'],
+      ['   - Para jugadores registrados: use su username o email exacto'],
+      ['   - Para jugadores externos: puede usar cualquier nombre'],
       [''],
-      ['4. Si no especifica Temporada, se usará la actual'],
-      ['5. Si no especifica Periodo, se usará "all_time"'],
-      ['6. Los usuarios deben existir en el sistema'],
-      ['7. Se actualizarán los rankings existentes o se crearán nuevos']
+      ['3. Columnas disponibles:'],
+      ['   - Usuario/Jugador/Player/Nombre: Identificador del jugador'],
+      ['   - Email/Correo: Email del jugador (opcional para externos)'],
+      ['   - Puntos/Points: Puntos totales'],
+      ['   - Manos/Manos Jugadas/Hands Played: Total de manos jugadas'],
+      ['   - Torneos/Tournaments: Torneos jugados'],
+      ['   - Rake/Total Rake: Rake generado'],
+      ['   - Ganadas/Wins: Partidas ganadas'],
+      ['   - Perdidas/Losses: Partidas perdidas'],
+      ['   - Temporada/Season: Formato YYYY-MM (ej: 2025-01)'],
+      ['   - Periodo/Period: all_time, monthly, weekly, daily'],
+      [''],
+      ['4. Notas importantes:'],
+      ['   - No es necesario que los jugadores estén registrados en el sistema'],
+      ['   - Si el usuario existe en el sistema, se vinculará automáticamente'],
+      ['   - Si no existe, se creará como jugador externo'],
+      ['   - Puede actualizar solo los campos que necesite'],
+      ['   - Las posiciones se calculan automáticamente'],
+      [''],
+      ['5. Ejemplos válidos:'],
+      ['   - Solo nombres y manos jugadas'],
+      ['   - Solo emails y puntos'],
+      ['   - Mezcla de jugadores registrados y externos']
     ];
 
     const wsInstructions = XLSX.utils.aoa_to_sheet(instructions);
@@ -177,9 +200,16 @@ class ExcelService {
     const validPeriods = ['all_time', 'monthly', 'weekly', 'daily'];
 
     data.forEach((row, index) => {
-      // Validar que tenga usuario o email
+      // Validar que tenga algún identificador
       if (!row.username && !row.email) {
         errors.push(`Fila ${index + 2}: Debe tener Usuario o Email`);
+      }
+
+      // Validar que tenga al menos un dato de ranking
+      const hasRankingData = row.points || row.hands_played || 
+                           row.tournaments || row.rake;
+      if (!hasRankingData) {
+        errors.push(`Fila ${index + 2}: Debe tener al menos un valor de ranking (puntos, manos, torneos o rake)`);
       }
 
       // Validar periodo si existe
@@ -213,8 +243,9 @@ class ExcelService {
     
     // Preparar datos para exportar
     const data = rankings.map(ranking => ({
-      'Usuario': ranking.player.username,
-      'Email': ranking.player.email,
+      'Usuario': ranking.player ? ranking.player.username : ranking.external_player_name,
+      'Email': ranking.player ? ranking.player.email : ranking.external_player_email,
+      'Es Externo': ranking.is_external ? 'Sí' : 'No',
       'Tipo': ranking.ranking_type,
       'Puntos': ranking.points,
       'Manos Jugadas': ranking.hands_played,
