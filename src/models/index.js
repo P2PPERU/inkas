@@ -22,6 +22,8 @@ db.Bonus = require('./Bonus')(sequelize, DataTypes);
 db.Ranking = require('./Ranking')(sequelize, DataTypes);
 db.News = require('./News')(sequelize, DataTypes);
 db.RouletteCode = require('./RouletteCode')(sequelize, DataTypes);
+db.RoulettePrize = require('./RoulettePrize')(sequelize, DataTypes);
+db.RouletteSpin = require('./RouletteSpin')(sequelize, DataTypes);
 
 // Definir asociaciones
 Object.keys(db).forEach(modelName => {

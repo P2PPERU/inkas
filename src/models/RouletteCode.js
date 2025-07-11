@@ -10,15 +10,12 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       unique: true
     },
-    prize_type: {
-      type: DataTypes.ENUM('bonus', 'points', 'free_spin', 'discount'),
+    grants_spin: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
       allowNull: false
     },
-    prize_value: {
-      type: DataTypes.DECIMAL(10, 2),
-      allowNull: false
-    },
-    prize_description: {
+    description: {
       type: DataTypes.STRING,
       allowNull: true
     },

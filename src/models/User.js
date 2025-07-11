@@ -69,6 +69,34 @@ module.exports = (sequelize, DataTypes) => {
         model: 'users',
         key: 'id'
       }
+    },
+    // Campos para sistema de ruleta
+    first_spin_demo_used: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false
+    },
+    real_spin_available: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false
+    },
+    validated_for_spin: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false
+    },
+    spin_validated_by: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: 'users',
+        key: 'id'
+      }
+    },
+    spin_validated_at: {
+      type: DataTypes.DATE,
+      allowNull: true
     }
   }, {
     tableName: 'users',
@@ -151,6 +179,24 @@ module.exports = (sequelize, DataTypes) => {
     User.hasMany(models.AffiliationHistory, {
       foreignKey: 'client_id',
       as: 'affiliationHistory'
+    });
+
+    // Ruleta - Giros
+    User.hasMany(models.RouletteSpin, {
+      foreignKey: 'user_id',
+      as: 'rouletteSpins'
+    });
+
+    // Ruleta - Validador
+    User.belongsTo(models.User, {
+      foreignKey: 'spin_validated_by',
+      as: 'spinValidator'
+    });
+
+    // Ruleta - Premios creados (admin)
+    User.hasMany(models.RoulettePrize, {
+      foreignKey: 'created_by',
+      as: 'createdRoulettePrizes'
     });
   };
 
