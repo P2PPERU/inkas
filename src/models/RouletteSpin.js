@@ -90,12 +90,16 @@ module.exports = (sequelize, DataTypes) => {
           }
         }
         
-        // Establecer fecha de expiración según el tipo de premio
+        // Establecer fecha de expiración según el tipo de premio si aplica
         if (spin.is_real_prize && !spin.prize_expiry_date) {
           const prize = await sequelize.models.RoulettePrize.findByPk(spin.prize_id);
           
-          // Tickets y bonos expiran en 30 días por defecto
-          if (['tournament_ticket', 'deposit_bonus'].includes(prize.prize_type)) {
+          // Si el premio tiene configuración de expiración
+          if (prize.custom_config && prize.custom_config.expiry_days) {
+            spin.prize_expiry_date = new Date(Date.now() + prize.custom_config.expiry_days * 24 * 60 * 60 * 1000);
+          }
+          // Por defecto 30 días para ciertos comportamientos
+          else if (prize.prize_behavior === 'bonus') {
             spin.prize_expiry_date = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
           }
         }
@@ -124,54 +128,68 @@ module.exports = (sequelize, DataTypes) => {
   };
 
   // Métodos de instancia
-  RouletteSpin.prototype.applyPrize = async function() {
+  RouletteSpin.prototype.applyPrize = async function(existingTransaction = null) {
     if (!this.is_real_prize || this.prize_status === 'applied') {
       throw new Error('Este premio no puede ser aplicado');
     }
 
-    const t = await sequelize.transaction();
+    const shouldCreateTransaction = !existingTransaction;
+    const t = existingTransaction || await sequelize.transaction();
     
     try {
-      const prize = await sequelize.models.RoulettePrize.findByPk(this.prize_id);
-      const user = await sequelize.models.User.findByPk(this.user_id);
+      const prize = await sequelize.models.RoulettePrize.findByPk(this.prize_id, { transaction: t });
+      const user = await sequelize.models.User.findByPk(this.user_id, { transaction: t });
 
-      switch (prize.prize_type) {
-        case 'cash_game_money':
-          // Aplicar dinero directo al balance
+      // Aplicar según el comportamiento del premio
+      switch (prize.prize_behavior) {
+        case 'instant_cash':
+          // Dinero directo al balance
           user.balance = parseFloat(user.balance) + parseFloat(prize.prize_value);
           await user.save({ transaction: t });
           break;
 
-        case 'deposit_bonus':
-          // Crear bonus para próximo depósito
+        case 'bonus':
+          // Crear bonus según configuración personalizada
+          const bonusConfig = prize.custom_config || {};
+          
           await sequelize.models.Bonus.create({
-            name: `Bono Ruleta: ${prize.name}`,
-            description: prize.description || 'Bono ganado en la ruleta',
-            type: 'deposit',
-            amount: 0, // Se calculará según el depósito
-            percentage: prize.prize_metadata.bonus_percentage,
+            name: bonusConfig.bonus_name || `Premio Ruleta: ${prize.name}`,
+            description: prize.description || 'Premio ganado en la ruleta',
+            type: bonusConfig.bonus_type || 'custom',
+            amount: bonusConfig.fixed_amount || 0,
+            percentage: bonusConfig.percentage || 0,
             max_bonus: prize.prize_value,
+            min_deposit: bonusConfig.min_deposit || 0,
             assigned_to: this.user_id,
             assigned_by: this.validated_by || user.id,
             status: 'active',
-            valid_until: this.prize_expiry_date
+            valid_until: this.prize_expiry_date || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
           }, { transaction: t });
           break;
 
-        case 'tournament_ticket':
-          // TODO: Implementar cuando tengamos módulo de torneos
-          console.log('Ticket de torneo pendiente de implementación');
+        case 'custom':
+          // Lógica personalizada según custom_config
+          if (prize.custom_config.action === 'add_vip_points') {
+            // Ejemplo: agregar puntos VIP
+            user.vip_points = (user.vip_points || 0) + prize.prize_value;
+            await user.save({ transaction: t });
+          } else if (prize.custom_config.action === 'unlock_feature') {
+            // Ejemplo: desbloquear característica
+            const features = user.unlocked_features || [];
+            features.push(prize.custom_config.feature_name);
+            user.unlocked_features = features;
+            await user.save({ transaction: t });
+          }
+          // Agregar más lógicas personalizadas según necesites
           break;
 
-        case 'rakeback':
-          // TODO: Implementar sistema de rakeback
-          console.log('Rakeback pendiente de implementación');
+        case 'manual':
+          // No hacer nada automático, requiere procesamiento manual
+          console.log(`Premio manual pendiente de procesamiento: ${prize.name} para usuario ${user.username}`);
           break;
 
-        case 'merchandise':
-          // TODO: Implementar sistema de mercancía
-          console.log('Mercancía pendiente de implementación');
-          break;
+        default:
+          console.log(`Comportamiento de premio no reconocido: ${prize.prize_behavior}`);
       }
 
       // Actualizar estado del giro
@@ -179,10 +197,17 @@ module.exports = (sequelize, DataTypes) => {
       this.validated_at = new Date();
       await this.save({ transaction: t });
 
-      await t.commit();
+      // Solo hacer commit si creamos la transacción
+      if (shouldCreateTransaction) {
+        await t.commit();
+      }
+      
       return true;
     } catch (error) {
-      await t.rollback();
+      // Solo hacer rollback si creamos la transacción
+      if (shouldCreateTransaction) {
+        await t.rollback();
+      }
       throw error;
     }
   };

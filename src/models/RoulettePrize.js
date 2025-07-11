@@ -23,19 +23,35 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     prize_type: {
-      type: DataTypes.ENUM(
-        'tournament_ticket',
-        'deposit_bonus',
-        'rakeback',
-        'cash_game_money',
-        'merchandise'
-      ),
+      type: DataTypes.STRING(50),
       allowNull: false,
       validate: {
-        isIn: {
-          args: [['tournament_ticket', 'deposit_bonus', 'rakeback', 'cash_game_money', 'merchandise']],
-          msg: 'Tipo de premio inválido'
+        notEmpty: {
+          msg: 'El tipo de premio es requerido'
+        },
+        len: {
+          args: [3, 50],
+          msg: 'El tipo debe tener entre 3 y 50 caracteres'
         }
+      }
+    },
+    prize_behavior: {
+      type: DataTypes.ENUM(
+        'instant_cash',      // Dinero directo al balance
+        'bonus',             // Crear bonus
+        'manual',            // Procesamiento manual
+        'custom'             // Comportamiento personalizado
+      ),
+      defaultValue: 'manual',
+      allowNull: false
+    },
+    custom_config: {
+      type: DataTypes.JSONB,
+      defaultValue: {},
+      allowNull: true,
+      get() {
+        const value = this.getDataValue('custom_config');
+        return value || {};
       }
     },
     prize_value: {
@@ -191,11 +207,13 @@ module.exports = (sequelize, DataTypes) => {
       id: prize.id,
       name: prize.name,
       type: prize.prize_type,
+      behavior: prize.prize_behavior,
       value: parseFloat(prize.prize_value),
       probability: parseFloat(prize.probability),
       color: prize.color,
       position: prize.position,
-      metadata: prize.prize_metadata
+      metadata: prize.prize_metadata,
+      customConfig: prize.custom_config
     }));
   };
 

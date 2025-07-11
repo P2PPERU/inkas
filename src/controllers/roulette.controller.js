@@ -103,7 +103,7 @@ exports.spin = async (req, res) => {
   const t = await sequelize.transaction();
   
   try {
-    const user = await User.findByPk(req.user.id);
+    const user = await User.findByPk(req.user.id, { transaction: t });
     
     // Determinar tipo de giro
     let spinType = null;
@@ -126,7 +126,8 @@ exports.spin = async (req, res) => {
           assigned_to: req.user.id,
           type: 'roulette_spin',
           status: 'active'
-        }
+        },
+        transaction: t
       });
       
       if (spinBonus) {
@@ -167,8 +168,45 @@ exports.spin = async (req, res) => {
       user.real_spin_available = false;
       await user.save({ transaction: t });
       
-      // Aplicar premio inmediatamente si es real
-      await spin.applyPrize();
+      // Aplicar premio según el comportamiento definido
+      if (prize.prize_behavior === 'instant_cash') {
+        // Dinero directo al balance
+        user.balance = parseFloat(user.balance) + parseFloat(prize.prize_value);
+        await user.save({ transaction: t });
+        
+        spin.prize_status = 'applied';
+        spin.validated_at = new Date();
+        await spin.save({ transaction: t });
+      } else if (prize.prize_behavior === 'bonus') {
+        // Crear bonus según configuración
+        const bonusConfig = prize.custom_config || {};
+        
+        await Bonus.create({
+          name: bonusConfig.bonus_name || `Premio Ruleta: ${prize.name}`,
+          description: prize.description || 'Premio ganado en la ruleta',
+          type: bonusConfig.bonus_type || 'custom',
+          amount: bonusConfig.fixed_amount || 0,
+          percentage: bonusConfig.percentage || 0,
+          max_bonus: prize.prize_value,
+          min_deposit: bonusConfig.min_deposit || 0,
+          assigned_to: req.user.id,
+          assigned_by: user.spin_validated_by || req.user.id,
+          status: 'active',
+          valid_until: new Date(Date.now() + (bonusConfig.validity_days || 30) * 24 * 60 * 60 * 1000)
+        }, { transaction: t });
+        
+        spin.prize_status = 'applied';
+        spin.validated_at = new Date();
+        await spin.save({ transaction: t });
+      } else if (prize.prize_behavior === 'custom' && prize.custom_config.auto_apply) {
+        // Comportamiento personalizado automático
+        // Aquí puedes agregar lógica personalizada según custom_config
+        
+        spin.prize_status = 'applied';
+        spin.validated_at = new Date();
+        await spin.save({ transaction: t });
+      }
+      // Si es 'manual' o 'custom' sin auto_apply, se mantiene como pending_validation
     }
 
     await t.commit();
@@ -195,6 +233,9 @@ exports.spin = async (req, res) => {
       response.message = '¡Este es un premio de ejemplo! Juega en nuestras mesas para activar tu giro real.';
     } else {
       response.message = `¡Felicidades! Has ganado: ${prize.name}`;
+      if (prize.prize_behavior === 'instant_cash') {
+        response.message += ` - $${prize.prize_value} ya fue agregado a tu balance.`;
+      }
     }
 
     res.json(response);
@@ -414,6 +455,62 @@ exports.deletePrize = async (req, res) => {
     console.error('Error al eliminar premio:', error);
     res.status(500).json({ 
       message: 'Error al eliminar premio',
+      error: error.message 
+    });
+  }
+};
+
+// Ajustar probabilidades de todos los premios
+exports.adjustProbabilities = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const { probabilities } = req.body;
+    
+    // Validar que se enviaron probabilidades
+    if (!probabilities || !Array.isArray(probabilities)) {
+      return res.status(400).json({ 
+        message: 'Se requiere un array de probabilidades' 
+      });
+    }
+    
+    // Validar que suman 100
+    const total = probabilities.reduce((sum, item) => sum + parseFloat(item.probability), 0);
+    if (Math.abs(total - 100) > 0.01) {
+      return res.status(400).json({ 
+        message: `Las probabilidades deben sumar 100%. Total actual: ${total}%` 
+      });
+    }
+    
+    // Actualizar cada premio
+    for (const item of probabilities) {
+      await RoulettePrize.update(
+        { probability: item.probability },
+        { 
+          where: { id: item.prize_id },
+          transaction: t 
+        }
+      );
+    }
+    
+    await t.commit();
+    
+    // Obtener premios actualizados
+    const updatedPrizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']]
+    });
+    
+    res.json({
+      success: true,
+      message: 'Probabilidades actualizadas exitosamente',
+      prizes: updatedPrizes
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error al ajustar probabilidades:', error);
+    res.status(500).json({ 
+      message: 'Error al ajustar probabilidades',
       error: error.message 
     });
   }

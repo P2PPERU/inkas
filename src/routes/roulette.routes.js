@@ -46,8 +46,14 @@ const validatePrize = [
     .optional()
     .trim(),
   body('prize_type')
-    .isIn(['tournament_ticket', 'deposit_bonus', 'rakeback', 'cash_game_money', 'merchandise'])
-    .withMessage('Tipo de premio inválido'),
+    .trim()
+    .notEmpty()
+    .withMessage('Tipo de premio requerido')
+    .isLength({ min: 3, max: 50 })
+    .withMessage('El tipo debe tener entre 3 y 50 caracteres'),
+  body('prize_behavior')
+    .isIn(['instant_cash', 'bonus', 'manual', 'custom'])
+    .withMessage('Comportamiento de premio inválido'),
   body('prize_value')
     .isFloat({ min: 0 })
     .withMessage('El valor debe ser un número positivo'),
@@ -60,10 +66,23 @@ const validatePrize = [
   body('color')
     .matches(/^#[0-9A-F]{6}$/i)
     .withMessage('Color debe ser un código hexadecimal válido'),
-  body('prize_metadata')
+  body('custom_config')
     .optional()
     .isObject()
-    .withMessage('Metadata debe ser un objeto'),
+    .withMessage('Configuración personalizada debe ser un objeto'),
+  handleValidationErrors
+];
+
+const validateProbabilityAdjustment = [
+  body('probabilities')
+    .isArray({ min: 1 })
+    .withMessage('Se requiere un array de probabilidades'),
+  body('probabilities.*.prize_id')
+    .isUUID()
+    .withMessage('ID de premio inválido'),
+  body('probabilities.*.probability')
+    .isFloat({ min: 0, max: 100 })
+    .withMessage('Probabilidad debe estar entre 0 y 100'),
   handleValidationErrors
 ];
 
@@ -127,6 +146,11 @@ router.use(isAdmin); // A partir de aquí solo admin
 // Gestión de premios
 router.get('/prizes', rouletteController.getPrizes);
 router.post('/prizes', validatePrize, rouletteController.createPrize);
+
+// Ajustar probabilidades de todos los premios (DEBE IR ANTES que :id)
+router.put('/prizes/adjust-probabilities', validateProbabilityAdjustment, rouletteController.adjustProbabilities);
+
+// Rutas con parámetro :id (DEBEN IR DESPUÉS de las rutas específicas)
 router.put('/prizes/:id', validatePrizeId, validatePrize, rouletteController.updatePrize);
 router.delete('/prizes/:id', validatePrizeId, rouletteController.deletePrize);
 
