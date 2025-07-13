@@ -79,39 +79,498 @@ const validateNewsQuery = [
 ];
 
 // === RUTAS PÚBLICAS ===
-// Obtener noticias (público ve solo publicadas)
+
+/**
+ * @swagger
+ * /api/news:
+ *   get:
+ *     summary: Listar noticias
+ *     tags: [News]
+ *     description: Obtiene lista de noticias con filtros opcionales. Usuarios no autenticados solo ven noticias publicadas.
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *         description: Número de página
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 50
+ *           default: 10
+ *         description: Noticias por página
+ *       - in: query
+ *         name: category
+ *         schema:
+ *           type: string
+ *           enum: [general, tournament, promotion, update]
+ *         description: Filtrar por categoría
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [all, draft, published, archived]
+ *           default: published
+ *         description: Filtrar por estado (solo editores/admin pueden ver borradores)
+ *       - in: query
+ *         name: featured
+ *         schema:
+ *           type: string
+ *           enum: [true, false]
+ *         description: Filtrar noticias destacadas
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Buscar en título, contenido o resumen
+ *       - in: query
+ *         name: sortBy
+ *         schema:
+ *           type: string
+ *           enum: [published_at, created_at, views, title]
+ *           default: published_at
+ *         description: Ordenar por campo
+ *     responses:
+ *       200:
+ *         description: Lista de noticias obtenida exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 news:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/News'
+ *                 totalPages:
+ *                   type: integer
+ *                 currentPage:
+ *                   type: integer
+ *                 totalNews:
+ *                   type: integer
+ *       400:
+ *         description: Parámetros inválidos
+ *       500:
+ *         description: Error del servidor
+ */
 router.get('/', validateNewsQuery, newsController.getNews);
 
-// Obtener noticias destacadas
+/**
+ * @swagger
+ * /api/news/featured:
+ *   get:
+ *     summary: Obtener noticias destacadas
+ *     tags: [News]
+ *     description: Obtiene las noticias marcadas como destacadas
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 20
+ *           default: 5
+ *         description: Número de noticias a obtener
+ *     responses:
+ *       200:
+ *         description: Noticias destacadas obtenidas exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 news:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/News'
+ *       500:
+ *         description: Error del servidor
+ */
 router.get('/featured', newsController.getFeaturedNews);
 
-// Obtener noticias por categoría
+/**
+ * @swagger
+ * /api/news/category/{category}:
+ *   get:
+ *     summary: Obtener noticias por categoría
+ *     tags: [News]
+ *     description: Lista las noticias de una categoría específica
+ *     parameters:
+ *       - in: path
+ *         name: category
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [general, tournament, promotion, update]
+ *         description: Categoría de las noticias
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 50
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Noticias obtenidas exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 category:
+ *                   type: string
+ *                 news:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/News'
+ *                 totalPages:
+ *                   type: integer
+ *                 currentPage:
+ *                   type: integer
+ *                 totalNews:
+ *                   type: integer
+ *       400:
+ *         description: Categoría inválida
+ *       500:
+ *         description: Error del servidor
+ */
 router.get('/category/:category', newsController.getNewsByCategory);
 
-// Obtener noticia por ID (incrementa vistas si está publicada)
+/**
+ * @swagger
+ * /api/news/{id}:
+ *   get:
+ *     summary: Obtener noticia por ID
+ *     tags: [News]
+ *     description: Obtiene una noticia específica. Si está publicada, incrementa el contador de vistas.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: ID de la noticia
+ *     responses:
+ *       200:
+ *         description: Noticia obtenida exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 news:
+ *                   $ref: '#/components/schemas/News'
+ *       403:
+ *         description: No tienes permiso para ver esta noticia (borrador)
+ *       404:
+ *         description: Noticia no encontrada
+ *       500:
+ *         description: Error del servidor
+ */
 router.get('/:id', newsController.getNewsById);
 
 // === RUTAS PROTEGIDAS (editor/admin) ===
-router.use(protect, isEditor); // A partir de aquí se requiere autenticación y rol editor/admin
+router.use(protect, isEditor);
 
-// CRUD de noticias
-router.post(
-  '/', 
-  uploadNews.single('image'), 
-  validateNews, 
-  newsController.createNews
-);
+/**
+ * @swagger
+ * /api/news:
+ *   post:
+ *     summary: Crear noticia
+ *     tags: [News, Editor]
+ *     security:
+ *       - bearerAuth: []
+ *     description: Crea una nueva noticia (Solo editores/admin)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - title
+ *               - content
+ *               - category
+ *             properties:
+ *               title:
+ *                 type: string
+ *                 minLength: 5
+ *                 maxLength: 200
+ *               content:
+ *                 type: string
+ *                 minLength: 50
+ *                 description: Contenido HTML de la noticia
+ *               summary:
+ *                 type: string
+ *                 maxLength: 500
+ *               category:
+ *                 type: string
+ *                 enum: [general, tournament, promotion, update]
+ *               status:
+ *                 type: string
+ *                 enum: [draft, published]
+ *                 default: draft
+ *               tags:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Array de tags (enviar como JSON string)
+ *               featured:
+ *                 type: boolean
+ *                 default: false
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *                 description: Imagen de la noticia (max 5MB)
+ *     responses:
+ *       201:
+ *         description: Noticia creada exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 news:
+ *                   $ref: '#/components/schemas/News'
+ *       400:
+ *         description: Datos inválidos o archivo muy grande
+ *       401:
+ *         description: No autorizado
+ *       403:
+ *         description: Solo editores/admin
+ *       500:
+ *         description: Error del servidor
+ */
+router.post('/', uploadNews.single('image'), validateNews, newsController.createNews);
 
-router.put(
-  '/:id', 
-  uploadNews.single('image'), 
-  validateNews, 
-  newsController.updateNews
-);
+/**
+ * @swagger
+ * /api/news/{id}:
+ *   put:
+ *     summary: Actualizar noticia
+ *     tags: [News, Editor]
+ *     security:
+ *       - bearerAuth: []
+ *     description: Actualiza una noticia existente. Los editores solo pueden editar sus propias noticias, admin puede editar todas.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: ID de la noticia
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               title:
+ *                 type: string
+ *                 minLength: 5
+ *                 maxLength: 200
+ *               content:
+ *                 type: string
+ *                 minLength: 50
+ *               summary:
+ *                 type: string
+ *                 maxLength: 500
+ *               category:
+ *                 type: string
+ *                 enum: [general, tournament, promotion, update]
+ *               status:
+ *                 type: string
+ *                 enum: [draft, published, archived]
+ *               tags:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               featured:
+ *                 type: boolean
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *                 description: Nueva imagen (opcional)
+ *     responses:
+ *       200:
+ *         description: Noticia actualizada exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 news:
+ *                   $ref: '#/components/schemas/News'
+ *       400:
+ *         description: Datos inválidos
+ *       401:
+ *         description: No autorizado
+ *       403:
+ *         description: No tienes permiso para editar esta noticia
+ *       404:
+ *         description: Noticia no encontrada
+ *       500:
+ *         description: Error del servidor
+ */
+router.put('/:id', uploadNews.single('image'), validateNews, newsController.updateNews);
 
+/**
+ * @swagger
+ * /api/news/{id}:
+ *   delete:
+ *     summary: Eliminar noticia
+ *     tags: [News, Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     description: Elimina una noticia (Solo administradores)
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: ID de la noticia
+ *     responses:
+ *       200:
+ *         description: Noticia eliminada exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *       401:
+ *         description: No autorizado
+ *       403:
+ *         description: Solo administradores pueden eliminar noticias
+ *       404:
+ *         description: Noticia no encontrada
+ *       500:
+ *         description: Error del servidor
+ */
 router.delete('/:id', newsController.deleteNews);
 
-// Estadísticas (solo para admin/editor)
+/**
+ * @swagger
+ * /api/news/stats/overview:
+ *   get:
+ *     summary: Obtener estadísticas de noticias
+ *     tags: [News, Editor]
+ *     security:
+ *       - bearerAuth: []
+ *     description: Obtiene estadísticas detalladas del sistema de noticias (Solo editores/admin)
+ *     responses:
+ *       200:
+ *         description: Estadísticas obtenidas exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 stats:
+ *                   type: object
+ *                   properties:
+ *                     byStatus:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           status:
+ *                             type: string
+ *                           count:
+ *                             type: integer
+ *                     byCategory:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           category:
+ *                             type: string
+ *                           count:
+ *                             type: integer
+ *                           totalViews:
+ *                             type: integer
+ *                           avgViews:
+ *                             type: number
+ *                     topNews:
+ *                       type: array
+ *                       description: Top 10 noticias más vistas
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                           title:
+ *                             type: string
+ *                           views:
+ *                             type: integer
+ *                           published_at:
+ *                             type: string
+ *                             format: date-time
+ *                           category:
+ *                             type: string
+ *                     topAuthors:
+ *                       type: array
+ *                       description: Top 5 autores más activos
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           author:
+ *                             type: string
+ *                           newsCount:
+ *                             type: integer
+ *                           totalViews:
+ *                             type: integer
+ *                     newsByMonth:
+ *                       type: array
+ *                       description: Noticias por mes (últimos 6 meses)
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           month:
+ *                             type: string
+ *                             format: date
+ *                           count:
+ *                             type: integer
+ *       401:
+ *         description: No autorizado
+ *       403:
+ *         description: Solo editores/admin
+ *       500:
+ *         description: Error del servidor
+ */
 router.get('/stats/overview', newsController.getNewsStats);
 
 // Middleware de manejo de errores para multer
