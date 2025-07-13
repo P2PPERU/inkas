@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 
 const routes = require('./routes');
 const errorMiddleware = require('./middlewares/error.middleware');
+const { swaggerUi, swaggerSpec } = require('./config/swagger');
 
 const app = express();
 
@@ -34,6 +35,9 @@ app.use(express.urlencoded({ extended: true }));
 
 // Rutas
 app.use('/api', routes);
+
+// Documentación Swagger
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Archivos estáticos
 app.use('/uploads', express.static('uploads'));
