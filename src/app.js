@@ -39,6 +39,9 @@ app.use('/api', routes);
 // Documentación Swagger
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
+// ⭐ ESTA ES LA LÍNEA NUEVA ⭐
+app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
+
 // Archivos estáticos
 app.use('/uploads', express.static('uploads'));
 
