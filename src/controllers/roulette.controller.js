@@ -353,6 +353,51 @@ exports.validateCode = async (req, res) => {
 
 // ==================== ENDPOINTS DE ADMIN ====================
 
+// Obtener configuración completa de la ruleta
+exports.getRouletteConfig = async (req, res) => {
+  try {
+    // Obtener todos los premios ordenados por posición
+    const prizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']],
+      include: [{
+        model: User,
+        as: 'creator',
+        attributes: ['username']
+      }]
+    });
+
+    // Validar probabilidades
+    const validation = await RoulettePrize.validateProbabilities();
+
+    // Obtener estadísticas rápidas
+    const stats = {
+      totalPrizes: prizes.length,
+      totalProbability: validation.total,
+      isValid: validation.isValid,
+      maxPositions: 20,
+      usedPositions: prizes.map(p => p.position),
+      availablePositions: Array.from({length: 20}, (_, i) => i + 1)
+        .filter(pos => !prizes.some(p => p.position === pos))
+    };
+
+    res.json({
+      success: true,
+      config: {
+        prizes,
+        validation,
+        stats
+      }
+    });
+  } catch (error) {
+    console.error('Error al obtener configuración:', error);
+    res.status(500).json({ 
+      message: 'Error al obtener configuración de ruleta',
+      error: error.message 
+    });
+  }
+};
+
 // Obtener configuración de premios
 exports.getPrizes = async (req, res) => {
   try {
@@ -511,6 +556,440 @@ exports.adjustProbabilities = async (req, res) => {
     console.error('Error al ajustar probabilidades:', error);
     res.status(500).json({ 
       message: 'Error al ajustar probabilidades',
+      error: error.message 
+    });
+  }
+};
+
+// Reordenar premios (cambiar posiciones)
+exports.reorderPrizes = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const { prizes } = req.body;
+    
+    // Validar que no haya posiciones duplicadas
+    const positions = prizes.map(p => p.position);
+    const uniquePositions = [...new Set(positions)];
+    
+    if (positions.length !== uniquePositions.length) {
+      return res.status(400).json({ 
+        message: 'No puede haber posiciones duplicadas' 
+      });
+    }
+    
+    // Actualizar posiciones
+    for (const prizeUpdate of prizes) {
+      await RoulettePrize.update(
+        { position: prizeUpdate.position },
+        { 
+          where: { id: prizeUpdate.id },
+          transaction: t 
+        }
+      );
+    }
+    
+    await t.commit();
+    
+    // Obtener premios actualizados
+    const updatedPrizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']]
+    });
+    
+    res.json({
+      success: true,
+      message: 'Posiciones actualizadas exitosamente',
+      prizes: updatedPrizes
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error al reordenar premios:', error);
+    res.status(500).json({ 
+      message: 'Error al reordenar premios',
+      error: error.message 
+    });
+  }
+};
+
+// Clonar premio existente
+exports.clonePrize = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { position } = req.body;
+    
+    const originalPrize = await RoulettePrize.findByPk(id);
+    
+    if (!originalPrize) {
+      return res.status(404).json({ 
+        message: 'Premio no encontrado' 
+      });
+    }
+    
+    // Verificar que la posición esté disponible
+    const positionTaken = await RoulettePrize.findOne({
+      where: { position, is_active: true }
+    });
+    
+    if (positionTaken) {
+      return res.status(400).json({ 
+        message: 'La posición ya está ocupada' 
+      });
+    }
+    
+    // Crear clon
+    const clonedPrize = await RoulettePrize.create({
+      name: `${originalPrize.name} (Copia)`,
+      description: originalPrize.description,
+      prize_type: originalPrize.prize_type,
+      prize_behavior: originalPrize.prize_behavior,
+      custom_config: originalPrize.custom_config,
+      prize_value: originalPrize.prize_value,
+      prize_metadata: originalPrize.prize_metadata,
+      probability: 0, // Iniciar con 0 para que el admin ajuste
+      color: originalPrize.color,
+      position,
+      min_deposit_required: originalPrize.min_deposit_required,
+      created_by: req.user.id
+    });
+    
+    res.status(201).json({
+      success: true,
+      message: 'Premio clonado exitosamente',
+      prize: clonedPrize
+    });
+  } catch (error) {
+    console.error('Error al clonar premio:', error);
+    res.status(500).json({ 
+      message: 'Error al clonar premio',
+      error: error.message 
+    });
+  }
+};
+
+// Actualización masiva de premios
+exports.bulkUpdatePrizes = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const { prizes } = req.body;
+    
+    // Validar que las probabilidades sumen 100
+    const totalProbability = prizes.reduce((sum, p) => sum + parseFloat(p.probability), 0);
+    if (Math.abs(totalProbability - 100) > 0.01) {
+      return res.status(400).json({ 
+        message: `Las probabilidades deben sumar 100%. Total actual: ${totalProbability}%` 
+      });
+    }
+    
+    // Actualizar cada premio
+    for (const prizeData of prizes) {
+      const { id, ...updateData } = prizeData;
+      
+      await RoulettePrize.update(
+        updateData,
+        { 
+          where: { id },
+          transaction: t 
+        }
+      );
+    }
+    
+    await t.commit();
+    
+    // Obtener premios actualizados
+    const updatedPrizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']]
+    });
+    
+    res.json({
+      success: true,
+      message: 'Premios actualizados exitosamente',
+      prizes: updatedPrizes
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error en actualización masiva:', error);
+    res.status(500).json({ 
+      message: 'Error en actualización masiva',
+      error: error.message 
+    });
+  }
+};
+
+// Activar/Desactivar múltiples premios
+exports.togglePrizesStatus = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const { prizeIds, isActive } = req.body;
+    
+    await RoulettePrize.update(
+      { is_active: isActive },
+      { 
+        where: { id: { [Op.in]: prizeIds } },
+        transaction: t 
+      }
+    );
+    
+    await t.commit();
+    
+    res.json({
+      success: true,
+      message: `${prizeIds.length} premios ${isActive ? 'activados' : 'desactivados'} exitosamente`
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error al cambiar estado de premios:', error);
+    res.status(500).json({ 
+      message: 'Error al cambiar estado de premios',
+      error: error.message 
+    });
+  }
+};
+
+// Restablecer configuración por defecto
+exports.resetToDefaultPrizes = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    // Desactivar todos los premios actuales
+    await RoulettePrize.update(
+      { is_active: false },
+      { 
+        where: { is_active: true },
+        transaction: t 
+      }
+    );
+    
+    // Crear premios por defecto
+    const defaultPrizes = [
+      {
+        name: 'Sigue Intentando',
+        description: 'Mejor suerte la próxima vez',
+        prize_type: 'none',
+        prize_behavior: 'manual',
+        prize_value: 0,
+        probability: 40,
+        color: '#808080',
+        position: 1
+      },
+      {
+        name: '$10 Cash',
+        description: 'Gana $10 directo a tu balance',
+        prize_type: 'cash',
+        prize_behavior: 'instant_cash',
+        prize_value: 10,
+        probability: 25,
+        color: '#00FF00',
+        position: 2
+      },
+      {
+        name: '$25 Cash',
+        description: 'Gana $25 directo a tu balance',
+        prize_type: 'cash',
+        prize_behavior: 'instant_cash',
+        prize_value: 25,
+        probability: 15,
+        color: '#00AA00',
+        position: 3
+      },
+      {
+        name: '50% Bonus',
+        description: '50% de bonus en tu próximo depósito hasta $100',
+        prize_type: 'bonus',
+        prize_behavior: 'bonus',
+        prize_value: 100,
+        probability: 10,
+        color: '#FFA500',
+        position: 4,
+        custom_config: {
+          bonus_name: 'Bonus Ruleta 50%',
+          bonus_type: 'deposit',
+          percentage: 50,
+          min_deposit: 20,
+          max_bonus: 100,
+          validity_days: 7
+        }
+      },
+      {
+        name: '$50 Cash',
+        description: 'Gana $50 directo a tu balance',
+        prize_type: 'cash',
+        prize_behavior: 'instant_cash',
+        prize_value: 50,
+        probability: 7,
+        color: '#007700',
+        position: 5
+      },
+      {
+        name: '$100 Cash',
+        description: '¡Gran Premio! $100 directo a tu balance',
+        prize_type: 'cash',
+        prize_behavior: 'instant_cash',
+        prize_value: 100,
+        probability: 3,
+        color: '#FFD700',
+        position: 6
+      }
+    ];
+    
+    for (const prizeData of defaultPrizes) {
+      await RoulettePrize.create({
+        ...prizeData,
+        created_by: req.user.id
+      }, { transaction: t });
+    }
+    
+    await t.commit();
+    
+    const newPrizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']]
+    });
+    
+    res.json({
+      success: true,
+      message: 'Configuración restablecida a valores por defecto',
+      prizes: newPrizes
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error al restablecer configuración:', error);
+    res.status(500).json({ 
+      message: 'Error al restablecer configuración',
+      error: error.message 
+    });
+  }
+};
+
+// Previsualizar ruleta con configuración actual
+exports.previewRoulette = async (req, res) => {
+  try {
+    const prizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']],
+      attributes: ['id', 'name', 'color', 'position', 'probability', 'prize_value', 'prize_type']
+    });
+    
+    if (prizes.length === 0) {
+      return res.status(400).json({ 
+        message: 'No hay premios configurados' 
+      });
+    }
+    
+    // Generar configuración para el frontend
+    const wheelConfig = {
+      segments: prizes.map(prize => ({
+        id: prize.id,
+        text: prize.name,
+        fillStyle: prize.color,
+        textFillStyle: '#FFFFFF',
+        probability: parseFloat(prize.probability)
+      })),
+      animation: {
+        type: 'spinToStop',
+        duration: 5,
+        spins: 8,
+        callbackFinished: 'alertPrize'
+      },
+      pins: {
+        number: prizes.length * 2
+      }
+    };
+    
+    res.json({
+      success: true,
+      config: wheelConfig,
+      prizes: prizes
+    });
+  } catch (error) {
+    console.error('Error al generar preview:', error);
+    res.status(500).json({ 
+      message: 'Error al generar preview',
+      error: error.message 
+    });
+  }
+};
+
+// Exportar configuración
+exports.exportConfig = async (req, res) => {
+  try {
+    const prizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']],
+      attributes: { exclude: ['id', 'created_by', 'created_at', 'updated_at'] }
+    });
+    
+    const config = {
+      version: '1.0',
+      exportDate: new Date().toISOString(),
+      prizes: prizes
+    };
+    
+    res.json({
+      success: true,
+      config: config
+    });
+  } catch (error) {
+    console.error('Error al exportar configuración:', error);
+    res.status(500).json({ 
+      message: 'Error al exportar configuración',
+      error: error.message 
+    });
+  }
+};
+
+// Importar configuración
+exports.importConfig = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const { config, replaceExisting = false } = req.body;
+    
+    if (!config.prizes || !Array.isArray(config.prizes)) {
+      return res.status(400).json({ 
+        message: 'Configuración inválida' 
+      });
+    }
+    
+    // Si se debe reemplazar, desactivar premios existentes
+    if (replaceExisting) {
+      await RoulettePrize.update(
+        { is_active: false },
+        { 
+          where: { is_active: true },
+          transaction: t 
+        }
+      );
+    }
+    
+    // Importar nuevos premios
+    for (const prizeData of config.prizes) {
+      await RoulettePrize.create({
+        ...prizeData,
+        created_by: req.user.id
+      }, { transaction: t });
+    }
+    
+    await t.commit();
+    
+    const newPrizes = await RoulettePrize.findAll({
+      where: { is_active: true },
+      order: [['position', 'ASC']]
+    });
+    
+    res.json({
+      success: true,
+      message: 'Configuración importada exitosamente',
+      prizes: newPrizes
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error al importar configuración:', error);
+    res.status(500).json({ 
+      message: 'Error al importar configuración',
       error: error.message 
     });
   }

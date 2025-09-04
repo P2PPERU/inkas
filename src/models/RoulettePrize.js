@@ -103,7 +103,6 @@ module.exports = (sequelize, DataTypes) => {
     position: {
       type: DataTypes.INTEGER,
       allowNull: false,
-      unique: true,
       validate: {
         min: {
           args: [1],
@@ -139,27 +138,45 @@ module.exports = (sequelize, DataTypes) => {
     timestamps: true,
     createdAt: 'created_at',
     updatedAt: 'updated_at',
+    indexes: [
+      {
+        unique: true,
+        fields: ['position', 'is_active'],
+        where: {
+          is_active: true
+        },
+        name: 'unique_active_position'
+      }
+    ],
     hooks: {
       beforeCreate: async (prize, options) => {
-        // Validar que la posición no esté ocupada
-        const existingPrize = await RoulettePrize.findOne({
-          where: { position: prize.position }
-        });
-        if (existingPrize) {
-          throw new Error('La posición ya está ocupada por otro premio');
-        }
-      },
-      beforeUpdate: async (prize, options) => {
-        // Si cambió la posición, validar que no esté ocupada
-        if (prize.changed('position')) {
+        // Validar que la posición no esté ocupada por un premio activo
+        if (prize.is_active) {
           const existingPrize = await RoulettePrize.findOne({
             where: { 
               position: prize.position,
-              id: { [DataTypes.Op.ne]: prize.id }
-            }
+              is_active: true
+            },
+            transaction: options.transaction
           });
           if (existingPrize) {
-            throw new Error('La posición ya está ocupada por otro premio');
+            throw new Error('La posición ya está ocupada por otro premio activo');
+          }
+        }
+      },
+      beforeUpdate: async (prize, options) => {
+        // Si cambió la posición o el estado activo, validar que no esté ocupada
+        if ((prize.changed('position') || prize.changed('is_active')) && prize.is_active) {
+          const existingPrize = await RoulettePrize.findOne({
+            where: { 
+              position: prize.position,
+              is_active: true,
+              id: { [DataTypes.Op.ne]: prize.id }
+            },
+            transaction: options.transaction
+          });
+          if (existingPrize) {
+            throw new Error('La posición ya está ocupada por otro premio activo');
           }
         }
       }
@@ -193,7 +210,8 @@ module.exports = (sequelize, DataTypes) => {
     return {
       isValid: Math.abs(totalProbability - 100) < 0.01, // Tolerancia de 0.01%
       total: totalProbability,
-      missing: 100 - totalProbability
+      missing: 100 - totalProbability,
+      count: activePrizes.length
     };
   };
 
@@ -215,6 +233,35 @@ module.exports = (sequelize, DataTypes) => {
       metadata: prize.prize_metadata,
       customConfig: prize.custom_config
     }));
+  };
+
+  // Método para obtener posiciones disponibles
+  RoulettePrize.getAvailablePositions = async function() {
+    const usedPositions = await this.findAll({
+      where: { is_active: true },
+      attributes: ['position'],
+      raw: true
+    });
+    
+    const used = usedPositions.map(p => p.position);
+    const allPositions = Array.from({ length: 20 }, (_, i) => i + 1);
+    
+    return allPositions.filter(pos => !used.includes(pos));
+  };
+
+  // Método para verificar si se puede crear/actualizar un premio
+  RoulettePrize.canUsePosition = async function(position, excludeId = null) {
+    const where = {
+      position,
+      is_active: true
+    };
+    
+    if (excludeId) {
+      where.id = { [DataTypes.Op.ne]: excludeId };
+    }
+    
+    const existing = await this.findOne({ where });
+    return !existing;
   };
 
   return RoulettePrize;

@@ -79,11 +79,27 @@ module.exports = (sequelize, DataTypes) => {
     timestamps: true,
     createdAt: 'created_at',
     updatedAt: false, // No necesitamos updated_at para historial
+    indexes: [
+      {
+        fields: ['user_id', 'spin_type'],
+        name: 'user_spin_type_index'
+      },
+      {
+        fields: ['prize_status'],
+        name: 'prize_status_index'
+      },
+      {
+        fields: ['spin_date'],
+        name: 'spin_date_index'
+      }
+    ],
     hooks: {
       beforeCreate: async (spin, options) => {
         // Si es un giro real, verificar que el usuario puede girar
         if (spin.is_real_prize) {
-          const user = await sequelize.models.User.findByPk(spin.user_id);
+          const user = await sequelize.models.User.findByPk(spin.user_id, {
+            transaction: options.transaction
+          });
           
           if (spin.spin_type === 'welcome_real' && !user.real_spin_available) {
             throw new Error('El usuario no tiene giro real disponible');
@@ -92,7 +108,9 @@ module.exports = (sequelize, DataTypes) => {
         
         // Establecer fecha de expiración según el tipo de premio si aplica
         if (spin.is_real_prize && !spin.prize_expiry_date) {
-          const prize = await sequelize.models.RoulettePrize.findByPk(spin.prize_id);
+          const prize = await sequelize.models.RoulettePrize.findByPk(spin.prize_id, {
+            transaction: options.transaction
+          });
           
           // Si el premio tiene configuración de expiración
           if (prize.custom_config && prize.custom_config.expiry_days) {
@@ -276,6 +294,38 @@ module.exports = (sequelize, DataTypes) => {
       ],
       order: [['created_at', 'ASC']]
     });
+  };
+
+  // Método para obtener estadísticas de giros
+  RouletteSpin.getSpinStats = async function(userId = null, dateRange = {}) {
+    const where = {};
+    
+    if (userId) {
+      where.user_id = userId;
+    }
+    
+    if (dateRange.startDate) {
+      where.spin_date = where.spin_date || {};
+      where.spin_date[DataTypes.Op.gte] = dateRange.startDate;
+    }
+    
+    if (dateRange.endDate) {
+      where.spin_date = where.spin_date || {};
+      where.spin_date[DataTypes.Op.lte] = dateRange.endDate;
+    }
+    
+    const stats = await this.findAll({
+      where,
+      attributes: [
+        'spin_type',
+        'prize_status',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
+        [sequelize.fn('COUNT', sequelize.literal('CASE WHEN is_real_prize = true THEN 1 END')), 'real_prizes']
+      ],
+      group: ['spin_type', 'prize_status']
+    });
+    
+    return stats;
   };
 
   return RouletteSpin;
