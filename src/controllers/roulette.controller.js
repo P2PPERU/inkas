@@ -489,12 +489,12 @@ exports.deletePrize = async (req, res) => {
       });
     }
 
-    prize.is_active = false;
-    await prize.save();
+    // ELIMINAR COMPLETAMENTE de la base de datos
+    await prize.destroy({ force: true }); // force: true asegura eliminación completa
 
     res.json({
       success: true,
-      message: 'Premio desactivado exitosamente'
+      message: 'Premio eliminado exitosamente'
     });
   } catch (error) {
     console.error('Error al eliminar premio:', error);
