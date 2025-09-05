@@ -477,26 +477,73 @@ exports.updatePrize = async (req, res) => {
   }
 };
 
-// Eliminar premio (solo desactivar)
+// Eliminar premio COMPLETAMENTE de la base de datos
 exports.deletePrize = async (req, res) => {
+  const t = await sequelize.transaction();
+  
   try {
     const { id } = req.params;
-    const prize = await RoulettePrize.findByPk(id);
+    
+    // Buscar el premio
+    const prize = await RoulettePrize.findByPk(id, { transaction: t });
 
     if (!prize) {
+      await t.rollback();
       return res.status(404).json({ 
         message: 'Premio no encontrado' 
       });
     }
 
-    // ELIMINAR COMPLETAMENTE de la base de datos
-    await prize.destroy({ force: true }); // force: true asegura eliminación completa
+    // Verificar si hay giros asociados a este premio
+    const spinsCount = await RouletteSpin.count({
+      where: { prize_id: id },
+      transaction: t
+    });
+
+    if (spinsCount > 0) {
+      // Si hay giros asociados, solo desactivar el premio
+      prize.is_active = false;
+      await prize.save({ transaction: t });
+      
+      await t.commit();
+      
+      return res.json({
+        success: true,
+        message: 'Premio desactivado (tiene giros asociados)',
+        deactivated: true
+      });
+    }
+
+    // Si no hay giros asociados, eliminar completamente
+    // Primero guardamos la posición para confirmar que queda libre
+    const position = prize.position;
+    
+    // Eliminar el premio completamente de la base de datos
+    await prize.destroy({ 
+      force: true, // Forzar eliminación completa, ignorando paranoid
+      transaction: t 
+    });
+
+    await t.commit();
+
+    // Verificar que la posición quedó libre
+    const positionCheck = await RoulettePrize.findOne({
+      where: { 
+        position: position,
+        is_active: true
+      }
+    });
 
     res.json({
       success: true,
-      message: 'Premio eliminado exitosamente'
+      message: 'Premio eliminado completamente de la base de datos',
+      deleted: true,
+      positionAvailable: !positionCheck,
+      freedPosition: position
     });
+    
   } catch (error) {
+    await t.rollback();
     console.error('Error al eliminar premio:', error);
     res.status(500).json({ 
       message: 'Error al eliminar premio',

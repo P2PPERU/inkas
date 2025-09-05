@@ -138,6 +138,7 @@ module.exports = (sequelize, DataTypes) => {
     timestamps: true,
     createdAt: 'created_at',
     updatedAt: 'updated_at',
+    paranoid: false, // IMPORTANTE: No usar soft delete para permitir eliminación completa
     indexes: [
       {
         unique: true,
@@ -160,7 +161,7 @@ module.exports = (sequelize, DataTypes) => {
             transaction: options.transaction
           });
           if (existingPrize) {
-            throw new Error('La posición ya está ocupada por otro premio activo');
+            throw new Error(`La posición ${prize.position} ya está ocupada por otro premio activo`);
           }
         }
       },
@@ -176,8 +177,19 @@ module.exports = (sequelize, DataTypes) => {
             transaction: options.transaction
           });
           if (existingPrize) {
-            throw new Error('La posición ya está ocupada por otro premio activo');
+            throw new Error(`La posición ${prize.position} ya está ocupada por otro premio activo`);
           }
+        }
+      },
+      beforeDestroy: async (prize, options) => {
+        // Verificar si tiene giros asociados antes de eliminar
+        const spinsCount = await sequelize.models.RouletteSpin.count({
+          where: { prize_id: prize.id },
+          transaction: options.transaction
+        });
+        
+        if (spinsCount > 0 && !options.force) {
+          throw new Error('No se puede eliminar un premio que tiene giros asociados. Use force: true para forzar la eliminación.');
         }
       }
     }
@@ -262,6 +274,32 @@ module.exports = (sequelize, DataTypes) => {
     
     const existing = await this.findOne({ where });
     return !existing;
+  };
+
+  // Método para limpiar premios inactivos (opcional)
+  RoulettePrize.cleanupInactivePrizes = async function() {
+    // Eliminar premios inactivos que no tienen giros asociados
+    const inactivePrizes = await this.findAll({
+      where: { is_active: false }
+    });
+    
+    let deleted = 0;
+    for (const prize of inactivePrizes) {
+      const hasSpins = await sequelize.models.RouletteSpin.count({
+        where: { prize_id: prize.id }
+      });
+      
+      if (hasSpins === 0) {
+        await prize.destroy({ force: true });
+        deleted++;
+      }
+    }
+    
+    return {
+      reviewed: inactivePrizes.length,
+      deleted: deleted,
+      kept: inactivePrizes.length - deleted
+    };
   };
 
   return RoulettePrize;
