@@ -1,3 +1,4 @@
+// src/controllers/agent.controller.js
 const { User, Bonus, RouletteCode, AffiliateProfile, AffiliateCode, AffiliationHistory } = require('../models');
 const { Op } = require('sequelize');
 const sequelize = require('../models').sequelize;
@@ -30,8 +31,7 @@ exports.getMyClients = async (req, res) => {
           parent_agent_id: req.user.id, 
           is_active: true 
         }
-      }),
-      totalBalance: clients.reduce((sum, client) => sum + parseFloat(client.balance), 0)
+      })
     };
 
     res.json({
@@ -83,15 +83,14 @@ exports.createClient = async (req, res) => {
         avatar: null
       },
       role: 'client',
-      parent_agent_id: req.user.id,
-      balance: parseFloat(process.env.DEFAULT_WELCOME_BONUS) || 50
+      parent_agent_id: req.user.id
     }, { transaction: t });
 
     // Registrar en historial de afiliación
     await AffiliationHistory.create({
       client_id: client.id,
       agent_id: req.user.id,
-      bonus_applied: client.balance,
+      bonus_applied: 0,
       ip_address: req.ip,
       user_agent: req.get('user-agent')
     }, { transaction: t });
@@ -110,8 +109,7 @@ exports.createClient = async (req, res) => {
         id: client.id,
         username: client.username,
         email: client.email,
-        profile: client.profile_data,
-        balance: client.balance
+        profile: client.profile_data
       }
     });
   } catch (error) {
@@ -432,11 +430,11 @@ exports.getAgentDashboard = async (req, res) => {
       }
     });
 
-    // Top 5 clientes por balance
+    // Top 5 clientes (sin balance, por actividad)
     const topClients = await User.findAll({
       where: { parent_agent_id: req.user.id },
-      attributes: ['id', 'username', 'profile_data', 'balance'],
-      order: [['balance', 'DESC']],
+      attributes: ['id', 'username', 'profile_data', 'last_login'],
+      order: [['last_login', 'DESC']],
       limit: 5
     });
 

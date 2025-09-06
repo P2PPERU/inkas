@@ -1,3 +1,4 @@
+// src/controllers/auth.controller.js
 const { User, AffiliateProfile, AffiliationHistory } = require('../models');
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
@@ -92,7 +93,6 @@ exports.register = async (req, res) => {
     // Determinar el agente padre
     let parentAgentId = null;
     let affiliateCodeUsed = null;
-    let bonusAmount = 0;
 
     // Si se proporcionó un código de afiliado
     if (affiliateCode) {
@@ -111,7 +111,6 @@ exports.register = async (req, res) => {
       if (affiliate) {
         parentAgentId = affiliate.user_id;
         affiliateCodeUsed = affiliateCode;
-        bonusAmount = parseFloat(process.env.DEFAULT_WELCOME_BONUS) || 50;
       }
     }
     // Si se seleccionó un afiliado del dropdown
@@ -126,7 +125,6 @@ exports.register = async (req, res) => {
 
       if (agent) {
         parentAgentId = agent.id;
-        bonusAmount = parseFloat(process.env.DEFAULT_WELCOME_BONUS) || 50;
       }
     }
 
@@ -142,8 +140,7 @@ exports.register = async (req, res) => {
         lastName: lastName || '',
         phone: phone || '',
         avatar: null
-      },
-      balance: bonusAmount // Bonus de bienvenida
+      }
     });
 
     // Registrar en historial de afiliación si tiene agente
@@ -152,7 +149,7 @@ exports.register = async (req, res) => {
         client_id: user.id,
         agent_id: parentAgentId,
         affiliate_code_used: affiliateCodeUsed,
-        bonus_applied: bonusAmount,
+        bonus_applied: 0,
         ip_address: req.ip,
         user_agent: req.get('user-agent'),
         referral_source: req.get('referer') || 'direct'
@@ -177,7 +174,6 @@ exports.register = async (req, res) => {
         username: user.username,
         email: user.email,
         role: user.role,
-        balance: user.balance,
         affiliatedTo: parentAgentId
       }
     });
@@ -235,7 +231,6 @@ exports.login = async (req, res) => {
         username: user.username,
         email: user.email,
         role: user.role,
-        balance: user.balance,
         profile: user.profile_data
       }
     });

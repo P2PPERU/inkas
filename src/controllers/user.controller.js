@@ -1,3 +1,4 @@
+// src/controllers/user.controller.js
 const { User, AffiliateProfile } = require('../models');
 const { Op } = require('sequelize');
 const { validationResult } = require('express-validator');
@@ -45,7 +46,6 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
-    // Actualizar campos del perfil
     user.profile_data = {
       ...user.profile_data,
       ...(firstName !== undefined && { firstName }),
@@ -80,7 +80,6 @@ exports.updateAvatar = async (req, res) => {
 
     const user = await User.findByPk(req.user.id);
 
-    // Eliminar avatar anterior si existe
     if (user.profile_data.avatar) {
       const oldAvatarPath = path.join(__dirname, '../../', user.profile_data.avatar);
       try {
@@ -90,7 +89,6 @@ exports.updateAvatar = async (req, res) => {
       }
     }
 
-    // Actualizar con nuevo avatar
     user.profile_data = {
       ...user.profile_data,
       avatar: `/uploads/avatars/${req.file.filename}`
@@ -112,7 +110,7 @@ exports.updateAvatar = async (req, res) => {
   }
 };
 
-// Cambiar contraseña (usuario actual)
+// Cambiar contraseña
 exports.changePassword = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -124,7 +122,6 @@ exports.changePassword = async (req, res) => {
 
     const user = await User.findByPk(req.user.id);
 
-    // Verificar contraseña actual
     const isMatch = await user.comparePassword(currentPassword);
     if (!isMatch) {
       return res.status(401).json({ 
@@ -132,7 +129,6 @@ exports.changePassword = async (req, res) => {
       });
     }
 
-    // Actualizar contraseña (el hook beforeUpdate la hasheará)
     user.password = newPassword;
     await user.save();
 
@@ -261,11 +257,9 @@ exports.createUser = async (req, res) => {
       parentAgentId,
       firstName,
       lastName,
-      phone,
-      balance
+      phone
     } = req.body;
 
-    // Verificar si existe
     const userExists = await User.findOne({
       where: {
         [Op.or]: [{ email }, { username }]
@@ -278,14 +272,12 @@ exports.createUser = async (req, res) => {
       });
     }
 
-    // Crear usuario
     const user = await User.create({
       username,
       email,
       password,
       role: role || 'client',
       parent_agent_id: parentAgentId || null,
-      balance: balance || 0,
       profile_data: {
         firstName: firstName || '',
         lastName: lastName || '',
@@ -294,7 +286,6 @@ exports.createUser = async (req, res) => {
       }
     });
 
-    // Si es agente, crear perfil de afiliado
     if (user.role === 'agent') {
       const affiliateCode = `INKAS${Date.now().toString().slice(-4)}`;
       await AffiliateProfile.create({
@@ -336,7 +327,6 @@ exports.updateUserStatus = async (req, res) => {
       });
     }
 
-    // No permitir desactivar el propio usuario
     if (user.id === req.user.id && !isActive) {
       return res.status(400).json({ 
         message: 'No puedes desactivar tu propia cuenta' 
@@ -381,7 +371,6 @@ exports.updateUserRole = async (req, res) => {
     user.role = role;
     await user.save();
 
-    // Si cambió a agente, crear perfil de afiliado
     if (oldRole !== 'agent' && role === 'agent') {
       const existingProfile = await AffiliateProfile.findOne({
         where: { user_id: user.id }
@@ -429,7 +418,6 @@ exports.resetUserPassword = async (req, res) => {
       });
     }
 
-    // Actualizar contraseña (el hook beforeUpdate la hasheará)
     user.password = newPassword;
     await user.save();
 
@@ -446,52 +434,6 @@ exports.resetUserPassword = async (req, res) => {
   }
 };
 
-// Actualizar balance del usuario (Admin)
-exports.updateUserBalance = async (req, res) => {
-  try {
-    const { balance, operation } = req.body;
-
-    const user = await User.findByPk(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({ 
-        message: 'Usuario no encontrado' 
-      });
-    }
-
-    if (operation === 'set') {
-      // Establecer balance específico
-      user.balance = balance;
-    } else if (operation === 'add') {
-      // Agregar al balance
-      user.balance = parseFloat(user.balance) + parseFloat(balance);
-    } else if (operation === 'subtract') {
-      // Restar del balance
-      const newBalance = parseFloat(user.balance) - parseFloat(balance);
-      if (newBalance < 0) {
-        return res.status(400).json({ 
-          message: 'El balance no puede ser negativo' 
-        });
-      }
-      user.balance = newBalance;
-    }
-
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'Balance actualizado exitosamente',
-      newBalance: user.balance
-    });
-  } catch (error) {
-    console.error('Error al actualizar balance:', error);
-    res.status(500).json({ 
-      message: 'Error al actualizar balance',
-      error: error.message 
-    });
-  }
-};
-
 // Eliminar usuario (soft delete)
 exports.deleteUser = async (req, res) => {
   try {
@@ -503,14 +445,12 @@ exports.deleteUser = async (req, res) => {
       });
     }
 
-    // No permitir eliminar el propio usuario
     if (user.id === req.user.id) {
       return res.status(400).json({ 
         message: 'No puedes eliminar tu propia cuenta' 
       });
     }
 
-    // Soft delete (paranoid está activado en el modelo)
     await user.destroy();
 
     res.json({
@@ -543,7 +483,7 @@ exports.getUserStats = async (req, res) => {
     const recentUsers = await User.findAll({
       where: {
         created_at: {
-          [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Últimos 7 días
+          [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
         }
       },
       attributes: { exclude: ['password'] },
