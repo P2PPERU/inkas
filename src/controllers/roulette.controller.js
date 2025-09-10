@@ -219,6 +219,7 @@ exports.spin = async (req, res) => {
         type: spinType,
         is_real: isRealPrize,
         prize: {
+          id: prize.id,
           name: prize.name,
           type: prize.prize_type,
           value: prize.prize_value,
