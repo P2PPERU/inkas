@@ -24,6 +24,7 @@ db.News = require('./News')(sequelize, DataTypes);
 db.RouletteCode = require('./RouletteCode')(sequelize, DataTypes);
 db.RoulettePrize = require('./RoulettePrize')(sequelize, DataTypes);
 db.RouletteSpin = require('./RouletteSpin')(sequelize, DataTypes);
+db.Club = require('./Club')(sequelize, DataTypes);
 
 // Definir asociaciones
 Object.keys(db).forEach(modelName => {

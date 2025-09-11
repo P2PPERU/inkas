@@ -9,9 +9,11 @@ const bonusRoutes = require('./bonus.routes');
 const newsRoutes = require('./news.routes');
 const rouletteRoutes = require('./roulette.routes');
 const rankingRoutes = require('./ranking.routes');
+const clubRoutes = require('./club.routes');
 
 // Rutas públicas
 router.use('/auth', authRoutes);
+router.use('/clubs', clubRoutes);
 
 // Rutas protegidas
 router.use('/users', userRoutes);
