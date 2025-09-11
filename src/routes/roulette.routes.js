@@ -1,3 +1,4 @@
+// routes/roulette.routes.js
 const express = require('express');
 const router = express.Router();
 const { body, query, param } = require('express-validator');
@@ -161,9 +162,14 @@ const validatePrizeId = [
   handleValidationErrors
 ];
 
-// ==================== RUTAS PÚBLICAS (REQUIEREN AUTH) ====================
+// ==================== RUTAS PÚBLICAS (SIN AUTENTICACIÓN) ====================
 
-router.use(protect); // Todas las rutas requieren autenticación
+// Obtener premios - PÚBLICO para todos (usuarios autenticados y no autenticados)
+router.get('/prizes', rouletteController.getPrizes);
+
+// ==================== RUTAS PROTEGIDAS (REQUIEREN AUTENTICACIÓN) ====================
+
+router.use(protect); // Desde aquí todas las rutas requieren autenticación
 
 // Obtener estado de giros del usuario
 router.get('/my-status', rouletteController.getMySpinStatus);
@@ -189,9 +195,6 @@ router.get('/codes', isAgent, validateCodeQuery, rouletteController.getCodes);
 
 // Obtener configuración completa de la ruleta
 router.get('/config', isAdmin, rouletteController.getRouletteConfig);
-
-// Obtener configuración de premios
-router.get('/prizes', isAdmin, rouletteController.getPrizes);
 
 // Crear premio de ruleta
 router.post('/prizes', isAdmin, validatePrize, rouletteController.createPrize);
@@ -241,7 +244,8 @@ router.post('/validate-batch', isAdmin, validateBatchValidation, rouletteControl
 // Obtener estadísticas de la ruleta
 router.get('/stats', isAdmin, validateStatsQuery, rouletteController.getStats);
 
-// Middleware de manejo de errores específico para ruleta
+// ==================== MIDDLEWARE DE MANEJO DE ERRORES ====================
+
 router.use((error, req, res, next) => {
   if (error.name === 'SequelizeUniqueConstraintError') {
     if (error.errors[0].path === 'position') {
