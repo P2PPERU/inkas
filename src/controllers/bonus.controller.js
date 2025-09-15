@@ -363,7 +363,7 @@ exports.getBonusStats = async (req, res) => {
       },
       attributes: [
         'assigned_by',
-        [sequelize.fn('COUNT', sequelize.col('id')), 'bonusCount'],
+        [sequelize.fn('COUNT', sequelize.col('Bonus.id')), 'bonusCount'],
         [sequelize.fn('SUM', sequelize.col('amount')), 'totalAssigned']
       ],
       include: [{
@@ -372,7 +372,7 @@ exports.getBonusStats = async (req, res) => {
         attributes: ['username', 'role']
       }],
       group: ['assigned_by', 'assignedBy.id'],
-      order: [[sequelize.fn('COUNT', sequelize.col('id')), 'DESC']],
+      order: [[sequelize.fn('COUNT', sequelize.col('Bonus.id')), 'DESC']],
       limit: 5
     });
 

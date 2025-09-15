@@ -49,7 +49,7 @@ const excelStorage = multer.diskStorage({
   }
 });
 
-// Configuración para logos de clubs
+// Configuración para logos de clubs (ACTUALIZADA PARA LOGO Y BANNER)
 const clubStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadPath = 'uploads/clubs';
@@ -58,7 +58,8 @@ const clubStorage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'club-' + uniqueSuffix + path.extname(file.originalname));
+    const prefix = file.fieldname; // 'logo' o 'banner'
+    cb(null, `club-${prefix}-${uniqueSuffix}${path.extname(file.originalname)}`);
   }
 });
 
@@ -67,7 +68,6 @@ const documentStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadPath = 'uploads/documents';
     createDir(uploadPath);
-    cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -157,9 +157,10 @@ module.exports = {
     fileFilter: excelFilter
   }),
 
+  // CONFIGURACIÓN ACTUALIZADA PARA CLUBS (LOGO + BANNER)
   uploadClubLogo: multer({
     storage: clubStorage,
-    limits: { fileSize: 3 * 1024 * 1024 }, // 3MB
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB aumentado para banners
     fileFilter: imageFilter
   }),
 
@@ -182,7 +183,7 @@ module.exports = {
         let uploadPath = 'uploads/general';
         
         // Determinar carpeta según el tipo de archivo
-        if (imageFilter(req, file, () => {})) {
+        if (file.mimetype.startsWith('image/')) {
           uploadPath = 'uploads/images';
         } else if (documentFilter(req, file, () => {})) {
           uploadPath = 'uploads/documents';
@@ -274,7 +275,7 @@ module.exports = {
   limits: {
     avatar: 2 * 1024 * 1024,      // 2MB
     news: 5 * 1024 * 1024,        // 5MB
-    club: 3 * 1024 * 1024,        // 3MB
+    club: 5 * 1024 * 1024,        // 5MB (aumentado)
     excel: 10 * 1024 * 1024,      // 10MB
     document: 15 * 1024 * 1024,   // 15MB
     banner: 8 * 1024 * 1024,      // 8MB

@@ -37,8 +37,8 @@ exports.getPublicClubs = async (req, res) => {
     const { count, rows: clubs } = await Club.findAndCountAll({
       where: whereConditions,
       attributes: [
-        'id', 'name', 'description', 'logo_url', 'city', 'country',
-        'club_type', 'member_count', 'established_date'
+        'id', 'name', 'description', 'logo_url', 'banner_url', 'city', 'country',
+        'club_type', 'member_count', 'established_date', 'settings'
       ],
       order: [['name', 'ASC']],
       limit: parseInt(limit),
@@ -71,9 +71,9 @@ exports.getPublicClubById = async (req, res) => {
         status: 'active'
       },
       attributes: [
-        'id', 'name', 'description', 'logo_url', 'address', 'city', 
+        'id', 'name', 'description', 'logo_url', 'banner_url', 'address', 'city', 
         'country', 'email', 'website', 'social_media', 'club_type', 
-        'member_count', 'established_date'
+        'member_count', 'established_date', 'settings', 'is_active', 'owner_name', 'owner_phone'
       ]
     });
 
@@ -91,6 +91,37 @@ exports.getPublicClubById = async (req, res) => {
     console.error('Error al obtener club:', error);
     res.status(500).json({ 
       message: 'Error al obtener club',
+      error: error.message 
+    });
+  }
+};
+
+// Obtener clubs destacados
+exports.getFeaturedClubs = async (req, res) => {
+  try {
+    const { limit = 6 } = req.query;
+
+    const clubs = await Club.findAll({
+      where: {
+        is_active: true,
+        status: 'active'
+      },
+      attributes: [
+        'id', 'name', 'description', 'logo_url', 'banner_url', 'city', 'country',
+        'club_type', 'member_count', 'established_date', 'settings'
+      ],
+      order: [['member_count', 'DESC']], 
+      limit: parseInt(limit)
+    });
+
+    res.json({
+      success: true,
+      clubs
+    });
+  } catch (error) {
+    console.error('Error al obtener clubs destacados:', error);
+    res.status(500).json({ 
+      message: 'Error al obtener clubs destacados',
       error: error.message 
     });
   }
@@ -116,6 +147,7 @@ exports.searchClubs = async (req, res) => {
         name: club.name,
         city: club.city,
         logo_url: club.logo_url,
+        banner_url: club.banner_url,
         club_type: club.club_type
       }))
     });
@@ -185,47 +217,132 @@ exports.getAllClubs = async (req, res) => {
   }
 };
 
-// Crear club (Admin)
+// ==================== CREAR CLUB (ADMIN) ====================
 exports.createClub = async (req, res) => {
   try {
-    const {
-      name,
-      description,
-      ownerPhone,
-      ownerName,
-      address,
-      city,
-      country,
-      email,
-      website,
-      socialMedia,
-      clubType,
-      establishedDate,
-      memberCount
-    } = req.body;
+    console.log('📝 Datos recibidos:', req.body);
+    console.log('📁 Archivos recibidos:', req.files);
 
+    // Parsear objetos JSON si vienen como strings
+    let location, requirements, schedule, socialLinks, features, gameTypes;
+    
+    try {
+      location = req.body.location ? JSON.parse(req.body.location) : {};
+    } catch (e) {
+      location = {};
+    }
+    
+    try {
+      requirements = req.body.requirements ? JSON.parse(req.body.requirements) : {};
+    } catch (e) {
+      requirements = {};
+    }
+    
+    try {
+      schedule = req.body.schedule ? JSON.parse(req.body.schedule) : {};
+    } catch (e) {
+      schedule = {};
+    }
+    
+    try {
+      socialLinks = req.body.socialLinks ? JSON.parse(req.body.socialLinks) : {};
+    } catch (e) {
+      socialLinks = {};
+    }
+
+    // Manejar arrays como JSON
+    try {
+      features = req.body.features
+      ? (typeof req.body.features === 'string' ? JSON.parse(req.body.features) : req.body.features)
+      : [];
+    } catch (e) {
+      features = [];
+    }
+
+    try {
+      gameTypes = req.body.gameTypes
+      ? (typeof req.body.gameTypes === 'string' ? JSON.parse(req.body.gameTypes) : req.body.gameTypes)
+      : [];
+    } catch (e) {
+      gameTypes = [];
+    }
+
+    // VALIDACIÓN: Solo el nombre es obligatorio
+    if (!req.body.name || req.body.name.trim() === '') {
+      return res.status(400).json({
+        message: 'El nombre del club es requerido'
+      });
+    }
+
+    // Construir datos del club - CAMPOS MÍNIMOS
     const clubData = {
-      name,
-      description,
-      owner_phone: ownerPhone,
-      owner_name: ownerName,
-      address,
-      city,
-      country: country || 'Perú',
-      email,
-      website,
-      social_media: socialMedia || {},
-      club_type: clubType || 'poker_room',
-      established_date: establishedDate,
-      member_count: memberCount || 0,
-      created_by: req.user.id
+      // CAMPOS OBLIGATORIOS
+      name: req.body.name.trim(),
+      description: req.body.description || 'Descripción del club',
+      created_by: req.user.id,
+      
+      // CAMPOS OPCIONALES CON VALORES POR DEFECTO
+      owner_phone: req.body.contactPhone || null,
+      owner_name: req.body.ownerName || 'Administrador',
+      
+      // Ubicación (opcional)
+      address: location.address || null,
+      city: location.city || null,
+      country: location.country || 'Perú',
+      
+      // Contacto (opcional)
+      email: req.body.contactEmail || null,
+      website: req.body.website || null,
+      
+      // Configuración (con valores por defecto)
+      social_media: socialLinks,
+      club_type: 'poker_room',
+      status: 'active',
+      is_active: req.body.isActive !== undefined ? req.body.isActive : true,
+      
+      // Campos por defecto
+      established_date: null,
+      member_count: 0,
+      
+      // Guardar datos adicionales en settings si existen
+      settings: {
+        features: features,
+        gameTypes: gameTypes,
+        requirements: requirements,
+        schedule: schedule,
+        shortDescription: req.body.shortDescription || null,
+        isFeatured: req.body.isFeatured || false,
+        order: req.body.order || 0
+      }
     };
 
-    // Si hay logo
+    // Manejar archivos subidos
     if (req.file) {
       clubData.logo_url = `/uploads/clubs/${req.file.filename}`;
     }
 
+    // Si hay múltiples archivos
+    if (req.files) {
+      console.log('📂 Archivos disponibles:', Object.keys(req.files));
+      
+      if (req.files.logo && req.files.logo[0]) {
+        clubData.logo_url = `/uploads/clubs/${req.files.logo[0].filename}`;
+        console.log('✅ Logo procesado:', clubData.logo_url);
+      }
+      
+      if (req.files.banner && req.files.banner[0]) {
+        clubData.banner_url = `/uploads/clubs/${req.files.banner[0].filename}`;
+        console.log('✅ Banner procesado:', clubData.banner_url);
+      }
+    }
+
+    console.log('🏗️ Datos finales para crear:', {
+      name: clubData.name,
+      logo_url: clubData.logo_url,
+      banner_url: clubData.banner_url
+    });
+
+    // Crear el club
     const club = await Club.create(clubData);
 
     // Recargar con creator
@@ -237,21 +354,35 @@ exports.createClub = async (req, res) => {
       }]
     });
 
+    console.log('✅ Club creado exitosamente con banner_url:', createdClub.banner_url);
+
     res.status(201).json({
       success: true,
-      club: createdClub
+      club: createdClub,
+      message: 'Club creado exitosamente'
     });
+
   } catch (error) {
-    // Si hay error y se subió imagen, eliminarla
+    // Limpiar archivos en caso de error
     if (req.file) {
       try {
         await fs.unlink(req.file.path);
       } catch (err) {
-        console.error('Error al eliminar imagen:', err);
+        console.error('Error al eliminar archivo:', err);
       }
     }
     
-    console.error('Error al crear club:', error);
+    if (req.files) {
+      Object.values(req.files).flat().forEach(async (file) => {
+        try {
+          await fs.unlink(file.path);
+        } catch (err) {
+          console.error('Error al eliminar archivo:', err);
+        }
+      });
+    }
+    
+    console.error('❌ Error al crear club:', error);
     res.status(500).json({ 
       message: 'Error al crear club',
       error: error.message 
@@ -300,44 +431,67 @@ exports.updateClub = async (req, res) => {
       });
     }
 
-    const {
-      name,
-      description,
-      ownerPhone,
-      ownerName,
-      address,
-      city,
-      country,
-      email,
-      website,
-      socialMedia,
-      clubType,
-      establishedDate,
-      memberCount,
-      status,
-      isActive
-    } = req.body;
+    // Solo actualizar campos que se envían
+    const updates = {};
+    
+    if (req.body.name !== undefined) updates.name = req.body.name;
+    if (req.body.description !== undefined) updates.description = req.body.description;
+    if (req.body.contactPhone !== undefined) updates.owner_phone = req.body.contactPhone;
+    if (req.body.ownerName !== undefined) updates.owner_name = req.body.ownerName;
+    if (req.body.contactEmail !== undefined) updates.email = req.body.contactEmail;
+    if (req.body.website !== undefined) updates.website = req.body.website;
+    if (req.body.isActive !== undefined) updates.is_active = req.body.isActive;
+    
+    // Manejar ubicación
+    if (req.body.location) {
+      const location = typeof req.body.location === 'string' 
+        ? JSON.parse(req.body.location) 
+        : req.body.location;
+      
+      if (location.address !== undefined) updates.address = location.address;
+      if (location.city !== undefined) updates.city = location.city;
+      if (location.country !== undefined) updates.country = location.country;
+    }
 
-    // Actualizar campos
-    if (name !== undefined) club.name = name;
-    if (description !== undefined) club.description = description;
-    if (ownerPhone !== undefined) club.owner_phone = ownerPhone;
-    if (ownerName !== undefined) club.owner_name = ownerName;
-    if (address !== undefined) club.address = address;
-    if (city !== undefined) club.city = city;
-    if (country !== undefined) club.country = country;
-    if (email !== undefined) club.email = email;
-    if (website !== undefined) club.website = website;
-    if (socialMedia !== undefined) club.social_media = socialMedia;
-    if (clubType !== undefined) club.club_type = clubType;
-    if (establishedDate !== undefined) club.established_date = establishedDate;
-    if (memberCount !== undefined) club.member_count = memberCount;
-    if (status !== undefined) club.status = status;
-    if (typeof isActive === 'boolean') club.is_active = isActive;
+    // Manejar redes sociales
+    if (req.body.socialLinks) {
+      const socialLinks = typeof req.body.socialLinks === 'string' 
+        ? JSON.parse(req.body.socialLinks) 
+        : req.body.socialLinks;
+      updates.social_media = socialLinks;
+    }
 
-    // Si hay nuevo logo
+    // Manejar archivos
+    if (req.files) {
+      // Logo
+      if (req.files.logo && req.files.logo[0]) {
+        if (club.logo_url) {
+          const oldLogoPath = path.join(__dirname, '../..', club.logo_url);
+          try {
+            await fs.unlink(oldLogoPath);
+          } catch (err) {
+            console.error('Error al eliminar logo anterior:', err);
+          }
+        }
+        updates.logo_url = `/uploads/clubs/${req.files.logo[0].filename}`;
+      }
+      
+      // Banner
+      if (req.files.banner && req.files.banner[0]) {
+        if (club.banner_url) {
+          const oldBannerPath = path.join(__dirname, '../..', club.banner_url);
+          try {
+            await fs.unlink(oldBannerPath);
+          } catch (err) {
+            console.error('Error al eliminar banner anterior:', err);
+          }
+        }
+        updates.banner_url = `/uploads/clubs/${req.files.banner[0].filename}`;
+      }
+    }
+    
+    // Backwards compatibility
     if (req.file) {
-      // Eliminar logo anterior si existe
       if (club.logo_url) {
         const oldLogoPath = path.join(__dirname, '../..', club.logo_url);
         try {
@@ -346,10 +500,11 @@ exports.updateClub = async (req, res) => {
           console.error('Error al eliminar logo anterior:', err);
         }
       }
-      club.logo_url = `/uploads/clubs/${req.file.filename}`;
+      updates.logo_url = `/uploads/clubs/${req.file.filename}`;
     }
 
-    await club.save();
+    // Aplicar actualizaciones
+    await club.update(updates);
 
     // Recargar con creator
     const updatedClub = await Club.findByPk(club.id, {
@@ -362,16 +517,28 @@ exports.updateClub = async (req, res) => {
 
     res.json({
       success: true,
-      club: updatedClub
+      club: updatedClub,
+      message: 'Club actualizado exitosamente'
     });
+
   } catch (error) {
-    // Si hay error y se subió nuevo logo, eliminarlo
+    // Limpiar archivo en caso de error
     if (req.file) {
       try {
         await fs.unlink(req.file.path);
       } catch (err) {
-        console.error('Error al eliminar imagen:', err);
+        console.error('Error al eliminar archivo:', err);
       }
+    }
+    
+    if (req.files) {
+      Object.values(req.files).flat().forEach(async (file) => {
+        try {
+          await fs.unlink(file.path);
+        } catch (err) {
+          console.error('Error al eliminar archivo:', err);
+        }
+      });
     }
     
     console.error('Error al actualizar club:', error);
@@ -385,7 +552,7 @@ exports.updateClub = async (req, res) => {
 // Cambiar estado del club (Admin)
 exports.updateClubStatus = async (req, res) => {
   try {
-    const { status } = req.body;
+    const { isActive } = req.body;
     
     const club = await Club.findByPk(req.params.id);
 
@@ -395,12 +562,13 @@ exports.updateClubStatus = async (req, res) => {
       });
     }
 
-    club.status = status;
+    club.is_active = isActive;
     await club.save();
 
     res.json({
       success: true,
-      message: `Club ${status === 'active' ? 'activado' : 'desactivado'} exitosamente`
+      message: `Club ${isActive ? 'activado' : 'desactivado'} exitosamente`,
+      club
     });
   } catch (error) {
     console.error('Error al actualizar estado:', error);
@@ -422,13 +590,22 @@ exports.deleteClub = async (req, res) => {
       });
     }
 
-    // Eliminar logo si existe
+    // Eliminar archivos asociados
     if (club.logo_url) {
       const logoPath = path.join(__dirname, '../..', club.logo_url);
       try {
         await fs.unlink(logoPath);
       } catch (err) {
         console.error('Error al eliminar logo:', err);
+      }
+    }
+    
+    if (club.banner_url) {
+      const bannerPath = path.join(__dirname, '../..', club.banner_url);
+      try {
+        await fs.unlink(bannerPath);
+      } catch (err) {
+        console.error('Error al eliminar banner:', err);
       }
     }
 
@@ -491,32 +668,16 @@ exports.getClubStats = async (req, res) => {
       limit: 10
     });
 
-    // Clubs por mes (últimos 6 meses)
-    const clubsByMonth = await Club.findAll({
-      where: {
-        created_at: {
-          [Op.gte]: new Date(new Date().setMonth(new Date().getMonth() - 6))
-        }
-      },
-      attributes: [
-        [sequelize.fn('DATE_TRUNC', 'month', sequelize.col('created_at')), 'month'],
-        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
-      ],
-      group: [sequelize.fn('DATE_TRUNC', 'month', sequelize.col('created_at'))],
-      order: [[sequelize.fn('DATE_TRUNC', 'month', sequelize.col('created_at')), 'ASC']]
-    });
-
     const totalClubs = await Club.count();
     const activeClubs = await Club.count({ where: { is_active: true, status: 'active' } });
 
     res.json({
       success: true,
       stats: {
-        overview: {
-          total: totalClubs,
-          active: activeClubs,
-          inactive: totalClubs - activeClubs
-        },
+        totalClubs,
+        activeClubs,
+        featuredClubs: 0,
+        totalMembers: topClubsByMembers.reduce((sum, club) => sum + (club.member_count || 0), 0),
         byStatus: statsByStatus.map(stat => ({
           status: stat.status,
           count: parseInt(stat.dataValues.count)
@@ -530,10 +691,10 @@ exports.getClubStats = async (req, res) => {
           city: stat.city || 'Sin especificar',
           count: parseInt(stat.dataValues.count)
         })),
-        topClubs: topClubsByMembers,
-        clubsByMonth: clubsByMonth.map(item => ({
-          month: item.dataValues.month,
-          count: parseInt(item.dataValues.count)
+        topClubs: topClubsByMembers.map(club => ({
+          id: club.id,
+          name: club.name,
+          members: club.member_count || 0
         }))
       }
     });

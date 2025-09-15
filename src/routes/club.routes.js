@@ -3,21 +3,35 @@ const router = express.Router();
 const clubController = require('../controllers/club.controller');
 const { protect } = require('../middlewares/auth.middleware');
 const { isAdmin } = require('../middlewares/roleCheck');
+const { uploadClubLogo } = require('../config/multer');
 
 // === RUTAS PÚBLICAS ===
 router.get('/', clubController.getPublicClubs);
+router.get('/featured', clubController.getFeaturedClubs);
 router.get('/search', clubController.searchClubs);
-router.get('/:id', clubController.getPublicClubById);
 
 // === RUTAS DE ADMINISTRADOR ===
-router.use(protect, isAdmin);
+router.get('/admin', protect, isAdmin, clubController.getAllClubs);
+router.get('/admin/stats', protect, isAdmin, clubController.getClubStats);
 
-router.get('/admin/all', clubController.getAllClubs);
-router.post('/admin', clubController.createClub);
-router.get('/admin/:id', clubController.getClubById);
-router.put('/admin/:id', clubController.updateClub);
-router.put('/admin/:id/status', clubController.updateClubStatus);
-router.delete('/admin/:id', clubController.deleteClub);
-router.get('/admin/stats', clubController.getClubStats);
+// Crear club con soporte para logo y banner
+router.post('/admin', protect, isAdmin, uploadClubLogo.fields([
+  { name: 'logo', maxCount: 1 },
+  { name: 'banner', maxCount: 1 }
+]), clubController.createClub);
+
+router.get('/admin/:id', protect, isAdmin, clubController.getClubById);
+
+// Actualizar club con soporte para logo y banner
+router.put('/admin/:id', protect, isAdmin, uploadClubLogo.fields([
+  { name: 'logo', maxCount: 1 },
+  { name: 'banner', maxCount: 1 }
+]), clubController.updateClub);
+
+router.put('/admin/:id/status', protect, isAdmin, clubController.updateClubStatus);
+router.delete('/admin/:id', protect, isAdmin, clubController.deleteClub);
+
+// ESTA DEBE IR AL FINAL
+router.get('/:id', clubController.getPublicClubById);
 
 module.exports = router;

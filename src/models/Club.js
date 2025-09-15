@@ -24,14 +24,14 @@ module.exports = (sequelize, DataTypes) => {
     },
     owner_phone: {
       type: DataTypes.STRING(20),
-      allowNull: false,
+      allowNull: true,
       validate: {
-        notEmpty: {
-          msg: 'El teléfono del dueño es requerido'
-        },
-        is: {
-          args: /^\+?[1-9]\d{1,14}$/,
-          msg: 'Formato de teléfono inválido'
+        isValidPhone(value) {
+          if (value && value.trim() !== '') {
+            if (!/^\+?[1-9]\d{1,14}$/.test(value)) {
+              throw new Error('Formato de teléfono inválido');
+            }
+          }
         }
       }
     },
@@ -40,6 +40,10 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     logo_url: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    banner_url: {  // ← AGREGAR ESTE CAMPO
       type: DataTypes.STRING,
       allowNull: true
     },
@@ -141,14 +145,13 @@ module.exports = (sequelize, DataTypes) => {
     ]
   });
 
+  // ... resto del código igual
   Club.associate = (models) => {
-    // Creador del club
     Club.belongsTo(models.User, {
       foreignKey: 'created_by',
       as: 'creator'
     });
 
-    // Un club puede tener muchos usuarios (miembros)
     Club.belongsToMany(models.User, {
       through: 'club_memberships',
       foreignKey: 'club_id',
@@ -157,7 +160,6 @@ module.exports = (sequelize, DataTypes) => {
     });
   };
 
-  // Métodos estáticos
   Club.getActiveClubs = async function() {
     return await this.findAll({
       where: {
