@@ -58,7 +58,7 @@ exports.getRankings = async (req, res) => {
       include: [{
         model: User,
         as: 'player',
-        attributes: ['id', 'username', 'profile_data', 'balance'],
+        attributes: ['id', 'username', 'profile_data'], // REMOVIDO 'balance'
         required: false // CAMBIO: No requerir usuario
       }],
       order: [[orderField, 'DESC']],
@@ -125,7 +125,7 @@ exports.getPlayerRanking = async (req, res) => {
       include: [{
         model: User,
         as: 'player',
-        attributes: ['id', 'username', 'profile_data'],
+        attributes: ['id', 'username', 'email', 'profile_data'], // AGREGADO 'email', REMOVIDO 'balance'
         required: false
       }],
       order: [['season', 'DESC'], ['ranking_type', 'ASC']]
@@ -141,6 +141,7 @@ exports.getPlayerRanking = async (req, res) => {
     const playerInfo = rankings[0].player ? {
       id: rankings[0].player.id,
       username: rankings[0].player.username,
+      email: rankings[0].player.email, // AGREGADO
       profile: rankings[0].player.profile_data
     } : {
       name: rankings[0].external_player_name,
@@ -207,7 +208,7 @@ exports.getAllRankings = async (req, res) => {
         {
           model: User,
           as: 'player',
-          attributes: ['id', 'username', 'email', 'profile_data'],
+          attributes: ['id', 'username', 'email', 'profile_data'], // REMOVIDO 'balance'
           required: false
         },
         {
@@ -535,7 +536,7 @@ exports.getRankingStats = async (req, res) => {
       include: [{
         model: User,
         as: 'player',
-        attributes: ['username', 'profile_data'],
+        attributes: ['username', 'profile_data'], // REMOVIDO 'balance'
         required: false
       }],
       order: [['points', 'DESC']],
@@ -556,7 +557,7 @@ exports.getRankingStats = async (req, res) => {
         {
           model: User,
           as: 'player',
-          attributes: ['username'],
+          attributes: ['username'], // REMOVIDO 'balance'
           required: false
         },
         {
@@ -673,7 +674,7 @@ exports.searchPlayers = async (req, res) => {
           { email: { [Op.iLike]: `%${query}%` } }
         ]
       },
-      attributes: ['id', 'username', 'email'],
+      attributes: ['id', 'username', 'email'], // REMOVIDO 'balance'
       limit: 10
     });
 
