@@ -19,6 +19,7 @@ db.AffiliateProfile = require('./AffiliateProfile')(sequelize, DataTypes);
 db.AffiliateCode = require('./AffiliateCode')(sequelize, DataTypes);
 db.AffiliationHistory = require('./AffiliationHistory')(sequelize, DataTypes);
 db.Bonus = require('./Bonus')(sequelize, DataTypes);
+db.RankingGroup = require('./RankingGroup')(sequelize, DataTypes);
 db.Ranking = require('./Ranking')(sequelize, DataTypes);
 db.News = require('./News')(sequelize, DataTypes);
 db.RouletteCode = require('./RouletteCode')(sequelize, DataTypes);

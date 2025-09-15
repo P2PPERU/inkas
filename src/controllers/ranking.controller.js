@@ -1,67 +1,59 @@
-const { Ranking, User } = require('../models');
+// src/controllers/ranking.controller.js - Versión actualizada
+const { Ranking, RankingGroup, User } = require('../models');
 const { Op } = require('sequelize');
 const sequelize = require('../models').sequelize;
 const excelService = require('../services/excel.service');
 const fs = require('fs').promises;
-const path = require('path');
 
-// Obtener rankings públicos
-exports.getRankings = async (req, res) => {
+// Obtener rankings de un grupo específico
+exports.getRankingsByGroup = async (req, res) => {
   try {
-    const { 
-      type = 'points', 
-      season, 
-      period = 'all_time',
-      page = 1, 
-      limit = 50 
-    } = req.query;
-
-    const validTypes = ['points', 'hands_played', 'tournaments', 'rake'];
-    if (!validTypes.includes(type)) {
-      return res.status(400).json({ 
-        message: 'Tipo de ranking inválido' 
-      });
-    }
+    const { groupId } = req.params;
+    const { page = 1, limit = 50 } = req.query;
 
     const offset = (page - 1) * limit;
 
-    const whereConditions = {
-      ranking_type: type,
-      is_visible: true,
-      ranking_period: period
-    };
+    // Verificar que el grupo existe y es visible
+    const group = await RankingGroup.findOne({
+      where: {
+        id: groupId,
+        is_visible: true
+      }
+    });
 
-    if (season) {
-      whereConditions.season = season;
-    } else {
-      // Por defecto, temporada actual
-      const now = new Date();
-      whereConditions.season = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    }
-
-    // Determinar campo de ordenamiento
-    let orderField = 'points';
-    switch (type) {
-      case 'hands_played':
-        orderField = 'hands_played';
-        break;
-      case 'tournaments':
-        orderField = 'tournaments_played';
-        break;
-      case 'rake':
-        orderField = 'total_rake';
-        break;
+    if (!group) {
+      return res.status(404).json({ 
+        message: 'Grupo de ranking no encontrado' 
+      });
     }
 
     const { count, rows: rankings } = await Ranking.findAndCountAll({
-      where: whereConditions,
-      include: [{
-        model: User,
-        as: 'player',
-        attributes: ['id', 'username', 'profile_data'], // REMOVIDO 'balance'
-        required: false // CAMBIO: No requerir usuario
-      }],
-      order: [[orderField, 'DESC']],
+      where: {
+        ranking_group_id: groupId,
+        is_visible: true
+      },
+      include: [
+        {
+          model: User,
+          as: 'player',
+          attributes: ['id', 'username', 'profile_data'],
+          required: false
+        },
+        {
+          model: RankingGroup,
+          as: 'rankingGroup',
+          attributes: ['id', 'name', 'ranking_type', 'start_date', 'end_date']
+        }
+      ],
+      order: [
+        [sequelize.literal(`CASE 
+          WHEN '${group.ranking_type}' = 'points' THEN points
+          WHEN '${group.ranking_type}' = 'hands_played' THEN hands_played
+          WHEN '${group.ranking_type}' = 'tournaments' THEN tournaments_played
+          WHEN '${group.ranking_type}' = 'rake' THEN total_rake
+          ELSE points
+        END`), 'DESC']
+      ],
       limit: parseInt(limit),
       offset: offset
     });
@@ -79,16 +71,21 @@ exports.getRankings = async (req, res) => {
 
     res.json({
       success: true,
-      type,
-      season: whereConditions.season,
-      period,
+      group: {
+        id: group.id,
+        name: group.name,
+        type: group.ranking_type,
+        startDate: group.start_date,
+        endDate: group.end_date,
+        isActive: new Date() >= group.start_date && new Date() <= group.end_date
+      },
       rankings,
       totalPages: Math.ceil(count / limit),
       currentPage: parseInt(page),
       totalPlayers: count
     });
   } catch (error) {
-    console.error('Error al obtener rankings:', error);
+    console.error('Error al obtener rankings por grupo:', error);
     res.status(500).json({ 
       message: 'Error al obtener rankings',
       error: error.message 
@@ -96,74 +93,78 @@ exports.getRankings = async (req, res) => {
   }
 };
 
-// Obtener ranking de un jugador específico
-exports.getPlayerRanking = async (req, res) => {
+// Obtener ranking de un jugador en un grupo específico
+exports.getPlayerRankingInGroup = async (req, res) => {
   try {
-    const { playerId } = req.params;
-    const { type = 'all' } = req.query;
+    const { groupId, playerId } = req.params;
 
     const whereConditions = {
+      ranking_group_id: groupId,
       is_visible: true
     };
 
     // Buscar por ID de usuario o por nombre externo
     if (playerId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-      // Es un UUID - buscar por player_id
       whereConditions.player_id = playerId;
     } else {
-      // Es un nombre - buscar por external_player_name
       whereConditions.external_player_name = playerId;
       whereConditions.is_external = true;
     }
 
-    if (type !== 'all') {
-      whereConditions.ranking_type = type;
-    }
-
-    const rankings = await Ranking.findAll({
+    const ranking = await Ranking.findOne({
       where: whereConditions,
-      include: [{
-        model: User,
-        as: 'player',
-        attributes: ['id', 'username', 'email', 'profile_data'], // AGREGADO 'email', REMOVIDO 'balance'
-        required: false
-      }],
-      order: [['season', 'DESC'], ['ranking_type', 'ASC']]
+      include: [
+        {
+          model: User,
+          as: 'player',
+          attributes: ['id', 'username', 'email', 'profile_data'],
+          required: false
+        },
+        {
+          model: RankingGroup,
+          as: 'rankingGroup',
+          attributes: ['id', 'name', 'ranking_type', 'start_date', 'end_date']
+        }
+      ]
     });
 
-    if (rankings.length === 0) {
+    if (!ranking) {
       return res.status(404).json({ 
-        message: 'No se encontraron rankings para este jugador' 
+        message: 'No se encontró ranking para este jugador en el grupo especificado' 
       });
     }
 
     // Preparar información del jugador
-    const playerInfo = rankings[0].player ? {
-      id: rankings[0].player.id,
-      username: rankings[0].player.username,
-      email: rankings[0].player.email, // AGREGADO
-      profile: rankings[0].player.profile_data
+    const playerInfo = ranking.player ? {
+      id: ranking.player.id,
+      username: ranking.player.username,
+      email: ranking.player.email,
+      profile: ranking.player.profile_data
     } : {
-      name: rankings[0].external_player_name,
-      email: rankings[0].external_player_email,
+      name: ranking.external_player_name,
+      email: ranking.external_player_email,
       isExternal: true
     };
 
     res.json({
       success: true,
       player: playerInfo,
-      rankings: rankings.map(r => ({
-        type: r.ranking_type,
-        season: r.season,
-        period: r.ranking_period,
-        position: r.position,
-        points: r.points,
-        handsPlayed: r.hands_played,
-        tournamentsPlayed: r.tournaments_played,
-        totalRake: r.total_rake,
-        winRate: r.win_rate,
-        history: r.history
-      }))
+      group: {
+        id: ranking.rankingGroup.id,
+        name: ranking.rankingGroup.name,
+        type: ranking.rankingGroup.ranking_type
+      },
+      ranking: {
+        position: ranking.position,
+        points: ranking.points,
+        handsPlayed: ranking.hands_played,
+        tournamentsPlayed: ranking.tournaments_played,
+        totalRake: ranking.total_rake,
+        wins: ranking.wins,
+        losses: ranking.losses,
+        winRate: ranking.win_rate,
+        history: ranking.history
+      }
     });
   } catch (error) {
     console.error('Error al obtener ranking del jugador:', error);
@@ -176,13 +177,11 @@ exports.getPlayerRanking = async (req, res) => {
 
 // === FUNCIONES DE ADMINISTRADOR ===
 
-// Obtener todos los rankings (incluye ocultos)
-exports.getAllRankings = async (req, res) => {
+// Obtener todos los rankings de un grupo (incluye ocultos)
+exports.getAllRankingsInGroup = async (req, res) => {
   try {
+    const { groupId } = req.params;
     const { 
-      type = 'points',
-      season,
-      period = 'all_time',
       includeHidden = true,
       page = 1,
       limit = 50
@@ -190,16 +189,19 @@ exports.getAllRankings = async (req, res) => {
 
     const offset = (page - 1) * limit;
     const whereConditions = {
-      ranking_type: type,
-      ranking_period: period
+      ranking_group_id: groupId
     };
 
     if (!includeHidden) {
       whereConditions.is_visible = true;
     }
 
-    if (season) {
-      whereConditions.season = season;
+    // Verificar que el grupo existe
+    const group = await RankingGroup.findByPk(groupId);
+    if (!group) {
+      return res.status(404).json({ 
+        message: 'Grupo de ranking no encontrado' 
+      });
     }
 
     const { count, rows: rankings } = await Ranking.findAndCountAll({
@@ -208,7 +210,7 @@ exports.getAllRankings = async (req, res) => {
         {
           model: User,
           as: 'player',
-          attributes: ['id', 'username', 'email', 'profile_data'], // REMOVIDO 'balance'
+          attributes: ['id', 'username', 'email', 'profile_data'],
           required: false
         },
         {
@@ -216,15 +218,29 @@ exports.getAllRankings = async (req, res) => {
           as: 'updatedBy',
           attributes: ['username'],
           required: false
+        },
+        {
+          model: RankingGroup,
+          as: 'rankingGroup',
+          attributes: ['id', 'name', 'ranking_type']
         }
       ],
-      order: [['points', 'DESC']],
+      order: [
+        [sequelize.literal(`CASE 
+          WHEN '${group.ranking_type}' = 'points' THEN points
+          WHEN '${group.ranking_type}' = 'hands_played' THEN hands_played
+          WHEN '${group.ranking_type}' = 'tournaments' THEN tournaments_played
+          WHEN '${group.ranking_type}' = 'rake' THEN total_rake
+          ELSE points
+        END`), 'DESC']
+      ],
       limit: parseInt(limit),
       offset: offset
     });
 
     // Agregar información de display
-    rankings.forEach(ranking => {
+    rankings.forEach((ranking, index) => {
+      ranking.dataValues.position = offset + index + 1;
       ranking.dataValues.displayName = ranking.player 
         ? ranking.player.username 
         : ranking.external_player_name;
@@ -235,13 +251,18 @@ exports.getAllRankings = async (req, res) => {
 
     res.json({
       success: true,
+      group: {
+        id: group.id,
+        name: group.name,
+        type: group.ranking_type
+      },
       rankings,
       totalPages: Math.ceil(count / limit),
       currentPage: parseInt(page),
       totalRecords: count
     });
   } catch (error) {
-    console.error('Error al obtener todos los rankings:', error);
+    console.error('Error al obtener todos los rankings del grupo:', error);
     res.status(500).json({ 
       message: 'Error al obtener rankings',
       error: error.message 
@@ -249,27 +270,31 @@ exports.getAllRankings = async (req, res) => {
   }
 };
 
-// Crear o actualizar ranking manual
-exports.updateRanking = async (req, res) => {
+// Crear o actualizar ranking en un grupo
+exports.updateRankingInGroup = async (req, res) => {
   const t = await sequelize.transaction();
   
   try {
-    const { playerId } = req.params;
+    const { groupId, playerId } = req.params;
     const { 
-      type = 'points',
       points,
       handsPlayed,
       tournamentsPlayed,
       totalRake,
       wins,
       losses,
-      season,
-      period = 'all_time',
       isVisible = true,
-      // Nuevos campos para jugadores externos
       externalPlayerName,
       externalPlayerEmail
     } = req.body;
+
+    // Verificar que el grupo existe
+    const group = await RankingGroup.findByPk(groupId, { transaction: t });
+    if (!group) {
+      return res.status(404).json({ 
+        message: 'Grupo de ranking no encontrado' 
+      });
+    }
 
     let player = null;
     let isExternal = false;
@@ -277,21 +302,16 @@ exports.updateRanking = async (req, res) => {
 
     // Determinar si es un jugador registrado o externo
     if (playerId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-      // Es un UUID - buscar usuario
       player = await User.findByPk(playerId);
       if (player) {
         whereClause = {
           player_id: playerId,
-          ranking_type: type,
-          season: season || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
-          ranking_period: period
+          ranking_group_id: groupId
         };
       } else {
-        // UUID no válido, crear como externo
         isExternal = true;
       }
     } else {
-      // No es UUID, crear como jugador externo
       isExternal = true;
     }
 
@@ -299,9 +319,7 @@ exports.updateRanking = async (req, res) => {
       whereClause = {
         external_player_name: externalPlayerName || playerId,
         is_external: true,
-        ranking_type: type,
-        season: season || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
-        ranking_period: period
+        ranking_group_id: groupId
       };
     }
 
@@ -309,6 +327,7 @@ exports.updateRanking = async (req, res) => {
     const [ranking, created] = await Ranking.findOrCreate({
       where: whereClause,
       defaults: {
+        ranking_group_id: groupId,
         player_id: player ? player.id : null,
         is_external: isExternal,
         external_player_name: isExternal ? (externalPlayerName || playerId) : null,
@@ -318,11 +337,23 @@ exports.updateRanking = async (req, res) => {
       transaction: t
     });
 
-    // Actualizar valores
-    if (points !== undefined) ranking.points = points;
-    if (handsPlayed !== undefined) ranking.hands_played = handsPlayed;
-    if (tournamentsPlayed !== undefined) ranking.tournaments_played = tournamentsPlayed;
-    if (totalRake !== undefined) ranking.total_rake = totalRake;
+    // Actualizar valores según el tipo de ranking del grupo
+    switch (group.ranking_type) {
+      case 'points':
+        if (points !== undefined) ranking.points = points;
+        break;
+      case 'hands_played':
+        if (handsPlayed !== undefined) ranking.hands_played = handsPlayed;
+        break;
+      case 'tournaments':
+        if (tournamentsPlayed !== undefined) ranking.tournaments_played = tournamentsPlayed;
+        break;
+      case 'rake':
+        if (totalRake !== undefined) ranking.total_rake = totalRake;
+        break;
+    }
+
+    // Campos comunes que siempre se pueden actualizar
     if (wins !== undefined) {
       ranking.wins = wins;
       ranking.games_played = ranking.wins + ranking.losses;
@@ -339,7 +370,7 @@ exports.updateRanking = async (req, res) => {
     await t.commit();
 
     // Actualizar posiciones
-    await Ranking.updatePositions(type, ranking.season, period);
+    await Ranking.updatePositions(groupId);
 
     res.json({
       success: true,
@@ -356,12 +387,22 @@ exports.updateRanking = async (req, res) => {
   }
 };
 
-// Importar rankings desde Excel
-exports.importFromExcel = async (req, res) => {
+// Importar rankings desde Excel a un grupo
+exports.importToGroup = async (req, res) => {
   try {
+    const { groupId } = req.params;
+    
     if (!req.file) {
       return res.status(400).json({ 
         message: 'Archivo Excel requerido' 
+      });
+    }
+
+    // Verificar que el grupo existe
+    const group = await RankingGroup.findByPk(groupId);
+    if (!group) {
+      return res.status(404).json({ 
+        message: 'Grupo de ranking no encontrado' 
       });
     }
 
@@ -383,15 +424,20 @@ exports.importFromExcel = async (req, res) => {
       });
     }
 
-    // Procesar datos
-    const results = await Ranking.createOrUpdateFromExcel(data, req.user.id);
+    // Procesar datos en el grupo específico
+    const results = await Ranking.createOrUpdateFromExcel(data, req.user.id, groupId);
 
     // Eliminar archivo temporal
     await fs.unlink(req.file.path);
 
     res.json({
       success: true,
-      message: 'Rankings importados exitosamente',
+      message: 'Rankings importados exitosamente al grupo',
+      group: {
+        id: group.id,
+        name: group.name,
+        type: group.ranking_type
+      },
       summary: {
         created: results.created,
         updated: results.updated,
@@ -455,7 +501,14 @@ exports.deleteRanking = async (req, res) => {
   try {
     const { rankingId } = req.params;
 
-    const ranking = await Ranking.findByPk(rankingId);
+    const ranking = await Ranking.findByPk(rankingId, {
+      include: [
+        {
+          model: RankingGroup,
+          as: 'rankingGroup'
+        }
+      ]
+    });
     
     if (!ranking) {
       return res.status(404).json({ 
@@ -463,8 +516,13 @@ exports.deleteRanking = async (req, res) => {
       });
     }
 
+    const groupId = ranking.ranking_group_id;
+
     // Soft delete
     await ranking.destroy();
+
+    // Recalcular posiciones en el grupo
+    await Ranking.updatePositions(groupId);
 
     res.json({
       success: true,
@@ -479,67 +537,103 @@ exports.deleteRanking = async (req, res) => {
   }
 };
 
-// Obtener estadísticas de rankings
-exports.getRankingStats = async (req, res) => {
+// Recalcular posiciones de un grupo
+exports.recalculateGroupPositions = async (req, res) => {
   try {
-    const { season } = req.query;
-    
-    const whereConditions = {};
-    if (season) {
-      whereConditions.season = season;
+    const { groupId } = req.params;
+
+    // Verificar que el grupo existe
+    const group = await RankingGroup.findByPk(groupId);
+    if (!group) {
+      return res.status(404).json({ 
+        message: 'Grupo de ranking no encontrado' 
+      });
     }
 
-    // Total de jugadores por tipo de ranking
-    const playersByType = await Ranking.findAll({
-      where: whereConditions,
-      attributes: [
-        'ranking_type',
-        [sequelize.fn('COUNT', sequelize.fn('DISTINCT', 
-          sequelize.literal(`COALESCE(player_id::text, external_player_name)`)
-        )), 'players']
-      ],
-      group: ['ranking_type']
+    const totalUpdated = await Ranking.updatePositions(groupId);
+
+    res.json({
+      success: true,
+      message: 'Posiciones recalculadas exitosamente',
+      totalUpdated,
+      group: {
+        id: group.id,
+        name: group.name,
+        type: group.ranking_type
+      }
+    });
+  } catch (error) {
+    console.error('Error al recalcular posiciones:', error);
+    res.status(500).json({ 
+      message: 'Error al recalcular posiciones',
+      error: error.message 
+    });
+  }
+};
+
+// Obtener estadísticas de un grupo
+exports.getGroupStats = async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    
+    // Verificar que el grupo existe
+    const group = await RankingGroup.findByPk(groupId);
+    if (!group) {
+      return res.status(404).json({ 
+        message: 'Grupo de ranking no encontrado' 
+      });
+    }
+
+    // Total de jugadores
+    const totalPlayers = await Ranking.count({
+      where: { ranking_group_id: groupId }
     });
 
     // Jugadores externos vs registrados
     const playerDistribution = await Ranking.findAll({
-      where: whereConditions,
+      where: { ranking_group_id: groupId },
       attributes: [
         'is_external',
-        [sequelize.fn('COUNT', sequelize.fn('DISTINCT', 
-          sequelize.literal(`COALESCE(player_id::text, external_player_name)`)
-        )), 'count']
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
       ],
       group: ['is_external']
     });
 
-    // Promedios por tipo
-    const averagesByType = await Ranking.findAll({
-      where: { ...whereConditions, is_visible: true },
+    // Promedios según el tipo de ranking
+    const fieldMap = {
+      'points': 'points',
+      'hands_played': 'hands_played',
+      'tournaments': 'tournaments_played',
+      'rake': 'total_rake'
+    };
+
+    const primaryField = fieldMap[group.ranking_type];
+    const averages = await Ranking.findOne({
+      where: { 
+        ranking_group_id: groupId,
+        is_visible: true 
+      },
       attributes: [
-        'ranking_type',
-        [sequelize.fn('AVG', sequelize.col('points')), 'avgPoints'],
-        [sequelize.fn('AVG', sequelize.col('hands_played')), 'avgHands'],
-        [sequelize.fn('AVG', sequelize.col('tournaments_played')), 'avgTournaments'],
-        [sequelize.fn('AVG', sequelize.col('total_rake')), 'avgRake']
-      ],
-      group: ['ranking_type']
+        [sequelize.fn('AVG', sequelize.col(primaryField)), 'avgValue'],
+        [sequelize.fn('AVG', sequelize.col('wins')), 'avgWins'],
+        [sequelize.fn('AVG', sequelize.col('losses')), 'avgLosses'],
+        [sequelize.fn('AVG', sequelize.col('win_rate')), 'avgWinRate']
+      ]
     });
 
-    // Top 10 jugadores globales
+    // Top 10 jugadores
     const topPlayers = await Ranking.findAll({
       where: { 
-        ...whereConditions, 
-        ranking_type: 'points',
+        ranking_group_id: groupId,
         is_visible: true 
       },
       include: [{
         model: User,
         as: 'player',
-        attributes: ['username', 'profile_data'], // REMOVIDO 'balance'
+        attributes: ['username', 'profile_data'],
         required: false
       }],
-      order: [['points', 'DESC']],
+      order: [[primaryField, 'DESC']],
       limit: 10
     });
 
@@ -552,12 +646,12 @@ exports.getRankingStats = async (req, res) => {
 
     // Últimas actualizaciones
     const recentUpdates = await Ranking.findAll({
-      where: whereConditions,
+      where: { ranking_group_id: groupId },
       include: [
         {
           model: User,
           as: 'player',
-          attributes: ['username'], // REMOVIDO 'balance'
+          attributes: ['username'],
           required: false
         },
         {
@@ -567,141 +661,40 @@ exports.getRankingStats = async (req, res) => {
         }
       ],
       order: [['updated_at', 'DESC']],
-      limit: 20
+      limit: 10
     });
 
     res.json({
       success: true,
+      group: {
+        id: group.id,
+        name: group.name,
+        type: group.ranking_type,
+        startDate: group.start_date,
+        endDate: group.end_date,
+        isActive: new Date() >= group.start_date && new Date() <= group.end_date
+      },
       stats: {
-        playersByType: playersByType.map(p => ({
-          type: p.ranking_type,
-          players: parseInt(p.dataValues.players)
-        })),
+        totalPlayers,
         playerDistribution: {
           registered: playerDistribution.find(p => !p.is_external)?.dataValues.count || 0,
           external: playerDistribution.find(p => p.is_external)?.dataValues.count || 0
         },
-        averages: averagesByType.map(a => ({
-          type: a.ranking_type,
-          avgPoints: parseFloat(a.dataValues.avgPoints) || 0,
-          avgHands: parseFloat(a.dataValues.avgHands) || 0,
-          avgTournaments: parseFloat(a.dataValues.avgTournaments) || 0,
-          avgRake: parseFloat(a.dataValues.avgRake) || 0
-        })),
+        averages: {
+          primaryField: group.ranking_type,
+          avgValue: parseFloat(averages?.dataValues.avgValue) || 0,
+          avgWins: parseFloat(averages?.dataValues.avgWins) || 0,
+          avgLosses: parseFloat(averages?.dataValues.avgLosses) || 0,
+          avgWinRate: parseFloat(averages?.dataValues.avgWinRate) || 0
+        },
         topPlayers,
         recentUpdates
       }
     });
   } catch (error) {
-    console.error('Error al obtener estadísticas:', error);
+    console.error('Error al obtener estadísticas del grupo:', error);
     res.status(500).json({ 
       message: 'Error al obtener estadísticas',
-      error: error.message 
-    });
-  }
-};
-
-// Recalcular todas las posiciones
-exports.recalculatePositions = async (req, res) => {
-  try {
-    const { type = 'all', season, period = 'all_time' } = req.body;
-
-    const types = type === 'all' 
-      ? ['points', 'hands_played', 'tournaments', 'rake'] 
-      : [type];
-
-    let totalUpdated = 0;
-
-    for (const rankingType of types) {
-      const updated = await Ranking.updatePositions(rankingType, season, period);
-      totalUpdated += updated;
-    }
-
-    res.json({
-      success: true,
-      message: 'Posiciones recalculadas exitosamente',
-      totalUpdated
-    });
-  } catch (error) {
-    console.error('Error al recalcular posiciones:', error);
-    res.status(500).json({ 
-      message: 'Error al recalcular posiciones',
-      error: error.message 
-    });
-  }
-};
-
-// Descargar plantilla de Excel
-exports.downloadTemplate = async (req, res) => {
-  try {
-    const templatePath = path.join(__dirname, '../../templates/ranking_template.xlsx');
-    
-    // Verificar si existe la plantilla
-    try {
-      await fs.access(templatePath);
-    } catch (error) {
-      // Si no existe, crear una plantilla básica
-      const template = await excelService.createRankingTemplate();
-      await fs.writeFile(templatePath, template);
-    }
-
-    res.download(templatePath, 'plantilla_rankings.xlsx');
-  } catch (error) {
-    console.error('Error al descargar plantilla:', error);
-    res.status(500).json({ 
-      message: 'Error al descargar plantilla',
-      error: error.message 
-    });
-  }
-};
-
-// Buscar jugadores por nombre (útil para autocompletado)
-exports.searchPlayers = async (req, res) => {
-  try {
-    const { query } = req.query;
-
-    if (!query || query.length < 2) {
-      return res.status(400).json({ 
-        message: 'La búsqueda debe tener al menos 2 caracteres' 
-      });
-    }
-
-    // Buscar en usuarios registrados
-    const users = await User.findAll({
-      where: {
-        [Op.or]: [
-          { username: { [Op.iLike]: `%${query}%` } },
-          { email: { [Op.iLike]: `%${query}%` } }
-        ]
-      },
-      attributes: ['id', 'username', 'email'], // REMOVIDO 'balance'
-      limit: 10
-    });
-
-    // Buscar en jugadores externos
-    const externalPlayers = await Ranking.findAll({
-      where: {
-        is_external: true,
-        external_player_name: { [Op.iLike]: `%${query}%` }
-      },
-      attributes: [
-        [sequelize.fn('DISTINCT', sequelize.col('external_player_name')), 'name'],
-        'external_player_email'
-      ],
-      limit: 10
-    });
-
-    res.json({
-      success: true,
-      results: {
-        registered: users,
-        external: externalPlayers
-      }
-    });
-  } catch (error) {
-    console.error('Error al buscar jugadores:', error);
-    res.status(500).json({ 
-      message: 'Error al buscar jugadores',
       error: error.message 
     });
   }

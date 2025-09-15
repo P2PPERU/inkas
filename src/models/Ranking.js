@@ -1,11 +1,20 @@
+// src/models/Ranking.js - Versión final post-migración
+const { Op } = require('sequelize');
+
 module.exports = (sequelize, DataTypes) => {
-  const { Op } = sequelize; // Importar Op al inicio
-  
-const Ranking = sequelize.define('Ranking', {
+  const Ranking = sequelize.define('Ranking', {
     id: {
         type: DataTypes.UUID,
         defaultValue: DataTypes.UUIDV4,
         primaryKey: true
+    },
+    ranking_group_id: {
+        type: DataTypes.UUID,
+        allowNull: false, // Ahora requerido
+        references: {
+            model: 'ranking_groups',
+            key: 'id'
+        }
     },
     player_id: {
         type: DataTypes.UUID,
@@ -27,10 +36,20 @@ const Ranking = sequelize.define('Ranking', {
         type: DataTypes.BOOLEAN,
         defaultValue: false
     },
+    // Mantener campos legacy para compatibilidad durante transición
     ranking_type: {
         type: DataTypes.ENUM('points', 'hands_played', 'tournaments', 'rake', 'custom'),
-        allowNull: false,
+        allowNull: true, // Opcional en el nuevo sistema
         defaultValue: 'points'
+    },
+    season: {
+        type: DataTypes.STRING,
+        allowNull: true // Opcional en el nuevo sistema
+    },
+    ranking_period: {
+        type: DataTypes.STRING(20),
+        allowNull: true, // Opcional en el nuevo sistema
+        defaultValue: 'all_time'
     },
     points: {
         type: DataTypes.INTEGER,
@@ -63,18 +82,6 @@ const Ranking = sequelize.define('Ranking', {
     win_rate: {
         type: DataTypes.DECIMAL(5, 2),
         defaultValue: 0.00
-    },
-    season: {
-        type: DataTypes.STRING,
-        defaultValue: () => {
-            const now = new Date();
-            return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        }
-    },
-    ranking_period: {
-        type: DataTypes.STRING(20),
-        defaultValue: 'all_time',
-        allowNull: false
     },
     position: {
         type: DataTypes.INTEGER,
@@ -138,23 +145,45 @@ const Ranking = sequelize.define('Ranking', {
     },
     indexes: [
         {
-            name: 'idx_player_ranking',
-            unique: true,
-            fields: ['player_id', 'ranking_type', 'season', 'ranking_period']
+            name: 'idx_ranking_group',
+            fields: ['ranking_group_id']
         },
         {
-            name: 'idx_external_ranking',
+            name: 'idx_player_id',
+            fields: ['player_id']
+        },
+        {
+            name: 'idx_external_player',
+            fields: ['external_player_name']
+        },
+        {
+            name: 'idx_legacy_ranking',
+            fields: ['ranking_type', 'season', 'ranking_period']
+        },
+        {
+            name: 'idx_ranking_group_player_unique',
             unique: true,
-            fields: ['external_player_name', 'external_player_email', 'ranking_type', 'season', 'ranking_period']
+            fields: ['ranking_group_id', 'player_id']
+        },
+        {
+            name: 'idx_ranking_group_external_unique',
+            unique: true,
+            fields: ['ranking_group_id', 'external_player_name', 'external_player_email']
         }
     ]
 });
 
   Ranking.associate = (models) => {
+    // Pertenece a un grupo de ranking
+    Ranking.belongsTo(models.RankingGroup, {
+      foreignKey: 'ranking_group_id',
+      as: 'rankingGroup'
+    });
+
     Ranking.belongsTo(models.User, {
       foreignKey: 'player_id',
       as: 'player',
-      constraints: false // CAMBIO: Sin restricciones de FK
+      constraints: false
     });
 
     Ranking.belongsTo(models.User, {
@@ -163,31 +192,30 @@ const Ranking = sequelize.define('Ranking', {
     });
   };
 
-  // Métodos estáticos
-  Ranking.getRankingsByType = async function(type, options = {}) {
+  // Métodos para el nuevo sistema con grupos
+  Ranking.getRankingsByGroup = async function(groupId, options = {}) {
     const {
-      season = null,
-      period = 'all_time',
       limit = 100,
       includeInvisible = false
     } = options;
 
     const whereConditions = {
-      ranking_type: type,
-      ranking_period: period
+      ranking_group_id: groupId
     };
 
     if (!includeInvisible) {
       whereConditions.is_visible = true;
     }
 
-    if (season) {
-      whereConditions.season = season;
+    // Obtener el grupo para saber el tipo de ranking
+    const group = await sequelize.models.RankingGroup.findByPk(groupId);
+    if (!group) {
+      throw new Error('Grupo de ranking no encontrado');
     }
 
     // Determinar campo de ordenamiento según el tipo
     let orderField = 'points';
-    switch (type) {
+    switch (group.ranking_type) {
       case 'hands_played':
         orderField = 'hands_played';
         break;
@@ -201,20 +229,26 @@ const Ranking = sequelize.define('Ranking', {
 
     const rankings = await this.findAll({
       where: whereConditions,
-      include: [{
-        model: sequelize.models.User,
-        as: 'player',
-        attributes: ['id', 'username', 'profile_data'],
-        required: false // CAMBIO: No requerir usuario
-      }],
+      include: [
+        {
+          model: sequelize.models.User,
+          as: 'player',
+          attributes: ['id', 'username', 'profile_data'],
+          required: false
+        },
+        {
+          model: sequelize.models.RankingGroup,
+          as: 'rankingGroup',
+          attributes: ['id', 'name', 'ranking_type', 'start_date', 'end_date']
+        }
+      ],
       order: [[orderField, 'DESC']],
       limit
     });
 
-    // Actualizar posiciones
+    // Actualizar posiciones y nombres de display
     rankings.forEach((ranking, index) => {
-      ranking.position = index + 1;
-      // Agregar nombre para mostrar
+      ranking.dataValues.position = index + 1;
       ranking.dataValues.displayName = ranking.player 
         ? ranking.player.username 
         : ranking.external_player_name;
@@ -223,10 +257,8 @@ const Ranking = sequelize.define('Ranking', {
     return rankings;
   };
 
-  Ranking.updatePositions = async function(type, season = null, period = 'all_time') {
-    const rankings = await this.getRankingsByType(type, { 
-      season, 
-      period, 
+  Ranking.updatePositions = async function(groupId) {
+    const rankings = await this.getRankingsByGroup(groupId, { 
       includeInvisible: true,
       limit: null 
     });
@@ -247,19 +279,25 @@ const Ranking = sequelize.define('Ranking', {
     return updates.length;
   };
 
-  Ranking.createOrUpdateFromExcel = async function(data, updatedBy) {
+  Ranking.createOrUpdateFromExcel = async function(data, updatedBy, groupId) {
     const results = {
       created: 0,
       updated: 0,
       errors: []
     };
 
+    // Verificar que el grupo existe
+    const group = await sequelize.models.RankingGroup.findByPk(groupId);
+    if (!group) {
+      throw new Error('Grupo de ranking no encontrado');
+    }
+
     for (const row of data) {
       try {
         // Buscar usuario existente
         const user = await sequelize.models.User.findOne({
           where: {
-            [Op.or]: [  // CORREGIDO: Usando Op importado
+            [Op.or]: [
               { username: row.username || row.usuario },
               { email: row.email }
             ]
@@ -269,83 +307,72 @@ const Ranking = sequelize.define('Ranking', {
         // Preparar datos base
         const playerIdentifier = row.username || row.usuario || row.email || 'Desconocido';
         const rankingData = {
+          ranking_group_id: groupId,
           is_external: !user,
           player_id: user ? user.id : null,
           external_player_name: !user ? playerIdentifier : null,
           external_player_email: !user ? row.email : null
         };
 
-        // Determinar tipo de ranking basado en los datos
-        const rankingTypes = [];
-        if (row.puntos || row.points) rankingTypes.push('points');
-        if (row.manos || row.hands_played) rankingTypes.push('hands_played');
-        if (row.torneos || row.tournaments) rankingTypes.push('tournaments');
-        if (row.rake) rankingTypes.push('rake');
+        // Crear cláusula where según si es usuario externo o registrado
+        const whereClause = user ? {
+          player_id: user.id,
+          ranking_group_id: groupId
+        } : {
+          external_player_name: rankingData.external_player_name,
+          is_external: true,
+          ranking_group_id: groupId
+        };
 
-        // Si no hay tipos específicos, continuar
-        if (rankingTypes.length === 0) {
-          results.errors.push({
-            row,
-            error: 'No se encontraron datos de ranking válidos'
-          });
-          continue;
+        const [ranking, created] = await this.findOrCreate({
+          where: whereClause,
+          defaults: {
+            ...rankingData,
+            last_updated_by: updatedBy,
+            last_import_date: new Date(),
+            import_filename: row._filename
+          }
+        });
+
+        // Actualizar valores según el tipo de ranking del grupo
+        switch (group.ranking_type) {
+          case 'points':
+            if (row.puntos || row.points) {
+              ranking.points = parseInt(row.puntos || row.points);
+            }
+            break;
+          case 'hands_played':
+            if (row.manos || row.hands_played) {
+              ranking.hands_played = parseInt(row.manos || row.hands_played);
+            }
+            break;
+          case 'tournaments':
+            if (row.torneos || row.tournaments) {
+              ranking.tournaments_played = parseInt(row.torneos || row.tournaments);
+            }
+            break;
+          case 'rake':
+            if (row.rake) {
+              ranking.total_rake = parseFloat(row.rake);
+            }
+            break;
         }
 
-        for (const type of rankingTypes) {
-          // Crear cláusula where según si es usuario externo o registrado
-          const whereClause = user ? {
-            player_id: user.id,
-            ranking_type: type,
-            season: row.season || new Date().toISOString().slice(0, 7),
-            ranking_period: row.period || 'all_time'
-          } : {
-            external_player_name: rankingData.external_player_name,
-            is_external: true,
-            ranking_type: type,
-            season: row.season || new Date().toISOString().slice(0, 7),
-            ranking_period: row.period || 'all_time'
-          };
+        // Campos comunes
+        if (row.wins) ranking.wins = parseInt(row.wins);
+        if (row.losses) ranking.losses = parseInt(row.losses);
+        if (row.games_played) ranking.games_played = parseInt(row.games_played);
 
-          const [ranking, created] = await this.findOrCreate({
-            where: whereClause,
-            defaults: {
-              ...rankingData,
-              last_updated_by: updatedBy,
-              last_import_date: new Date(),
-              import_filename: row._filename
-            }
-          });
+        ranking.last_updated_by = updatedBy;
+        ranking.last_import_date = new Date();
+        ranking.import_filename = row._filename;
 
-          // Actualizar valores
-          if (type === 'points' && (row.puntos || row.points)) {
-            ranking.points = parseInt(row.puntos || row.points);
-          }
-          if (type === 'hands_played' && (row.manos || row.hands_played)) {
-            ranking.hands_played = parseInt(row.manos || row.hands_played);
-          }
-          if (type === 'tournaments' && (row.torneos || row.tournaments)) {
-            ranking.tournaments_played = parseInt(row.torneos || row.tournaments);
-          }
-          if (type === 'rake' && row.rake) {
-            ranking.total_rake = parseFloat(row.rake);
-          }
+        await ranking.save();
 
-          // Campos comunes
-          if (row.wins) ranking.wins = parseInt(row.wins);
-          if (row.losses) ranking.losses = parseInt(row.losses);
-          if (row.games_played) ranking.games_played = parseInt(row.games_played);
-
-          ranking.last_updated_by = updatedBy;
-          ranking.last_import_date = new Date();
-          ranking.import_filename = row._filename;
-
-          await ranking.save();
-
-          if (created) {
-            results.created++;
-          } else {
-            results.updated++;
-          }
+        if (created) {
+          results.created++;
+        } else {
+          results.updated++;
         }
       } catch (error) {
         results.errors.push({
@@ -356,16 +383,75 @@ const Ranking = sequelize.define('Ranking', {
     }
 
     // Actualizar posiciones después de importar
-    const currentSeason = new Date().toISOString().slice(0, 7);
-    const affectedSeasons = [...new Set(data.map(row => row.season || currentSeason))];
-    for (const season of affectedSeasons) {
-      await this.updatePositions('points', season);
-      await this.updatePositions('hands_played', season);
-      await this.updatePositions('tournaments', season);
-      await this.updatePositions('rake', season);
-    }
+    await this.updatePositions(groupId);
 
     return results;
+  };
+
+  // Métodos legacy para compatibilidad (TEMPORAL)
+  Ranking.getRankingsByType = async function(type, options = {}) {
+    const {
+      season = null,
+      period = 'all_time',
+      limit = 100,
+      includeInvisible = false
+    } = options;
+
+    // Buscar grupos que coincidan con los criterios legacy
+    const groups = await sequelize.models.RankingGroup.findAll({
+      where: {
+        ranking_type: type,
+        is_visible: includeInvisible ? undefined : true
+      },
+      include: [{
+        model: this,
+        as: 'rankings',
+        where: {
+          is_visible: includeInvisible ? undefined : true
+        },
+        include: [{
+          model: sequelize.models.User,
+          as: 'player',
+          attributes: ['id', 'username', 'profile_data'],
+          required: false
+        }],
+        required: false
+      }]
+    });
+
+    // Aplanar rankings de todos los grupos
+    const allRankings = groups.reduce((acc, group) => {
+      return acc.concat(group.rankings || []);
+    }, []);
+
+    // Ordenar por el campo apropiado
+    let orderField = 'points';
+    switch (type) {
+      case 'hands_played':
+        orderField = 'hands_played';
+        break;
+      case 'tournaments':
+        orderField = 'tournaments_played';
+        break;
+      case 'rake':
+        orderField = 'total_rake';
+        break;
+    }
+
+    allRankings.sort((a, b) => b[orderField] - a[orderField]);
+
+    // Limitar resultados
+    const limitedRankings = limit ? allRankings.slice(0, limit) : allRankings;
+
+    // Actualizar posiciones y nombres de display
+    limitedRankings.forEach((ranking, index) => {
+      ranking.dataValues.position = index + 1;
+      ranking.dataValues.displayName = ranking.player 
+        ? ranking.player.username 
+        : ranking.external_player_name;
+    });
+
+    return limitedRankings;
   };
 
   return Ranking;
